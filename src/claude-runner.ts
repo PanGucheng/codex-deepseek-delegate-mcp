@@ -11,6 +11,7 @@ import type {
 
 const IMPLEMENTER_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
 const IMPLEMENTER_AUTO_ALLOWED_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
+const IMPLEMENTER_NO_BASH_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
 const SCOUT_TOOLS = ["Read", "LS", "Grep", "Glob"];
 const SCOUT_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob"];
 
@@ -25,9 +26,8 @@ export class ClaudeRunner implements DelegateRunner {
     let finalSummary = "";
     let status: DelegateResult["status"] = "failed";
     let sdkSessionId = input.resumeSdkSessionId;
-    const tools = input.subagentType === "repo-scout" ? SCOUT_TOOLS : IMPLEMENTER_TOOLS;
-    const allowedTools =
-      input.subagentType === "repo-scout" ? SCOUT_AUTO_ALLOWED_TOOLS : IMPLEMENTER_AUTO_ALLOWED_TOOLS;
+    const tools = getTools(input);
+    const allowedTools = getAutoAllowedTools(input);
 
     await contextLog(context, "task_session", {
       taskId: input.taskId,
@@ -128,7 +128,9 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     "",
     input.subagentType === "repo-scout"
       ? "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise rationale. Do not edit files or use Bash."
-      : "Implement the assignment. File edits are normal work. Prefer Edit, MultiEdit, or Write. Bash is policy-gated and must target explicit in-scope files.",
+      : input.runVerification
+        ? "Implement the assignment. Use Edit, MultiEdit, or Write for file modifications. Do not use Bash redirection or shell commands to edit files unless the direct file tools fail. Bash is policy-gated and should be used mainly for verification or simple inspection."
+        : "Implement the assignment. Bash is not available for this task because verification was not requested. Use Edit, MultiEdit, or Write for file modifications and finish without running shell commands.",
     "Do not call other subagents or task tools. Subagent depth is fixed at 1.",
     "Keep changes tightly scoped, do not modify global configuration, do not push commits, and do not run destructive commands.",
     "Use only the tools made available by the host.",
@@ -136,6 +138,22 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     `cwd: ${input.cwd}`,
     "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
   ].join("\n");
+}
+
+function getTools(input: NormalizedDelegateInput): string[] {
+  if (input.subagentType === "repo-scout") {
+    return SCOUT_TOOLS;
+  }
+
+  return input.runVerification ? IMPLEMENTER_TOOLS : IMPLEMENTER_NO_BASH_TOOLS;
+}
+
+function getAutoAllowedTools(input: NormalizedDelegateInput): string[] {
+  if (input.subagentType === "repo-scout") {
+    return SCOUT_AUTO_ALLOWED_TOOLS;
+  }
+
+  return IMPLEMENTER_AUTO_ALLOWED_TOOLS;
 }
 
 function getMessageSessionId(message: SDKMessage): string | undefined {

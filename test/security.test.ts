@@ -99,6 +99,7 @@ describe("tool policy", () => {
 
   it("honors allowedPaths when present", () => {
     const scoped = { ...input, allowedPaths: [path.join(root, "src")] };
+    expect(authorizeTool("Read", { file_path: "README.md" }, scoped).allowed).toBe(true);
     expect(authorizeTool("Write", { file_path: "src/new.ts" }, scoped).allowed).toBe(true);
     expect(authorizeTool("Write", { file_path: "README.md" }, scoped).allowed).toBe(false);
   });
@@ -168,6 +169,10 @@ describe("tool policy", () => {
     const result = await canUseTool("Bash", { command: "npm install left-pad" }, toolOptions());
 
     expect(result.behavior).toBe("allow");
+    expect(result).toMatchObject({
+      updatedInput: { command: "npm install left-pad" },
+      toolUseID: "test-tool-use",
+    });
     expect(commandsRun[0]).toMatchObject({
       command: "npm install left-pad",
       status: "allowed-review",

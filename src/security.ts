@@ -184,7 +184,7 @@ export function createCanUseTool(
   tests: TestRecord[],
   options: CanUseToolOptions = {},
 ): CanUseTool {
-  return async (toolName, toolInput): Promise<PermissionResult> => {
+  return async (toolName, toolInput, toolOptions): Promise<PermissionResult> => {
     const decision = await reviewIfNeeded(
       authorizeTool(toolName, toolInput, input),
       input,
@@ -211,7 +211,11 @@ export function createCanUseTool(
       };
     }
 
-    return { behavior: "allow" };
+    return {
+      behavior: "allow",
+      updatedInput: toolInput,
+      toolUseID: toolOptions.toolUseID,
+    };
   };
 }
 
@@ -251,15 +255,24 @@ export function authorizeTool(
       continue;
     }
 
-    if (!isAllowedFilePath(candidate, input.cwd, input.allowedPaths)) {
+    const allowed = isWriteTool(toolName)
+      ? isAllowedFilePath(candidate, input.cwd, input.allowedPaths)
+      : isAllowedFilePath(candidate, input.cwd);
+    if (!allowed) {
       return {
         allowed: false,
-        reason: `tool path escapes cwd or allowedPaths: ${candidate}`,
+        reason: isWriteTool(toolName)
+          ? `tool path escapes cwd or allowedPaths: ${candidate}`
+          : `tool path escapes cwd: ${candidate}`,
       };
     }
   }
 
   return { allowed: true, reason: "tool is allowed by the default policy" };
+}
+
+function isWriteTool(toolName: string): boolean {
+  return toolName === "Edit" || toolName === "MultiEdit" || toolName === "Write";
 }
 
 function isReadOnlyMetadataPath(candidate: string, input: NormalizedDelegateInput): boolean {

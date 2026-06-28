@@ -180,12 +180,20 @@ task registry 保存在：
 
 ## 真实 DeepSeek Smoke Test
 
-真实 DeepSeek 调用默认跳过。需要显式设置以下环境变量才会运行：
+真实 DeepSeek 调用默认跳过。只读 smoke test 需要显式设置以下环境变量才会运行：
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "..."
 $env:RUN_DEEPSEEK_SMOKE = "1"
 npm test -- test/deepseek-smoke.test.ts
+```
+
+真实端到端 E2E 会创建临时 fixture，执行 `repo-scout -> implementer -> taskId resume`，并验证 DeepSeek 实际修改文件和测试通过：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "..."
+$env:RUN_DEEPSEEK_E2E = "1"
+npm test -- test/deepseek-e2e.test.ts
 ```
 
 ## Git 使用
