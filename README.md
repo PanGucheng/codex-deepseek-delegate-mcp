@@ -1,4 +1,4 @@
-# DeepSeek Delegate MCP Server
+# Codex DeepSeek Delegate MCP
 
 这是一个本地 Codex MCP 服务。它让 Codex 使用 `gpt-5.5` 作为 primary planner，再通过 OpenCode 风格的 Task/Subagent 工具把探索或实现任务委托给 Claude Agent SDK，并由 DeepSeek 的 Anthropic 兼容接口提供模型能力。
 
@@ -16,6 +16,8 @@
 ## 安装与构建
 
 ```bash
+git clone https://github.com/PanGucheng/codex-deepseek-delegate-mcp.git
+cd codex-deepseek-delegate-mcp
 npm install
 npm run build
 npm test
@@ -30,15 +32,28 @@ npm test
 
 ## Codex 配置
 
-项目内已经包含 `.codex/config.toml`，用于让 Codex 加载本地 MCP 服务：
+如果在本仓库内使用，项目已经包含 `.codex/config.toml`，用于让 Codex 加载本地 MCP 服务：
 
 ```toml
 model = "gpt-5.5"
 
 [mcp_servers.deepseek_delegate]
 command = "node"
-args = ["E:/delegate_to_deepseek_worker/dist/index.js"]
-cwd = "E:/delegate_to_deepseek_worker"
+args = ["dist/index.js"]
+cwd = "."
+env_vars = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_DELEGATE_COMMAND_REVIEWER", "OPENAI_COMMAND_REVIEW_MODEL"]
+startup_timeout_sec = 20
+tool_timeout_sec = 1800
+default_tools_approval_mode = "prompt"
+```
+
+如果要在其他项目里使用这个 MCP，把下面这段加入目标项目的 `.codex/config.toml`，并把路径替换为你克隆本仓库的位置：
+
+```toml
+[mcp_servers.deepseek_delegate]
+command = "node"
+args = ["D:/path/to/codex-deepseek-delegate-mcp/dist/index.js"]
+cwd = "D:/path/to/codex-deepseek-delegate-mcp"
 env_vars = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_DELEGATE_COMMAND_REVIEWER", "OPENAI_COMMAND_REVIEW_MODEL"]
 startup_timeout_sec = 20
 tool_timeout_sec = 1800

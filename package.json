@@ -1,7 +1,7 @@
 {
-  "name": "delegate-to-deepseek-worker",
+  "name": "codex-deepseek-delegate-mcp",
   "version": "0.1.0",
-  "description": "A local Codex MCP server that delegates implementation work to Claude Agent SDK backed by DeepSeek.",
+  "description": "A Codex MCP server that delegates task/subagent work to Claude Agent SDK backed by DeepSeek.",
   "type": "module",
   "bin": {
     "deepseek-delegate": "./dist/index.js"

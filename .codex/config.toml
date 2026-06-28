@@ -2,8 +2,8 @@ model = "gpt-5.5"
 
 [mcp_servers.deepseek_delegate]
 command = "node"
-args = ["E:/delegate_to_deepseek_worker/dist/index.js"]
-cwd = "E:/delegate_to_deepseek_worker"
+args = ["dist/index.js"]
+cwd = "."
 env_vars = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_DELEGATE_COMMAND_REVIEWER", "OPENAI_COMMAND_REVIEW_MODEL"]
 startup_timeout_sec = 20
 tool_timeout_sec = 1800
