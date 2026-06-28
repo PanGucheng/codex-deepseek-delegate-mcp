@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DelegateInput, NormalizedDelegateInput } from "./types.js";
+import type { DelegateTaskInput, NormalizedDelegateInput } from "./types.js";
 import { DelegateError } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -15,7 +15,10 @@ type Fingerprint = {
 
 export type FileSnapshot = Map<string, Fingerprint>;
 
-export function normalizeInput(input: DelegateInput, workspaceRoot: string): NormalizedDelegateInput {
+export function normalizeInput(
+  input: DelegateTaskInput & { taskId: string; resumeSdkSessionId?: string; resumed?: boolean },
+  workspaceRoot: string,
+): NormalizedDelegateInput {
   const resolvedRoot = path.resolve(workspaceRoot);
   const resolvedCwd = path.resolve(input.cwd || resolvedRoot);
 
@@ -26,11 +29,23 @@ export function normalizeInput(input: DelegateInput, workspaceRoot: string): Nor
     );
   }
 
-  const allowedFiles = input.allowedFiles?.map((entry) => {
-    const resolved = path.resolve(resolvedCwd, entry);
+  const allowedPaths = input.allowedPaths?.map((entry) => {
+    const normalizedEntry = stripSimpleGlobSuffix(entry);
+    const resolved = path.resolve(resolvedCwd, normalizedEntry);
     if (!isSubpath(resolvedCwd, resolved)) {
       throw new DelegateError(
-        `allowedFiles entry escapes cwd: ${entry}`,
+        `allowedPaths entry escapes cwd: ${entry}`,
+        "blocked",
+      );
+    }
+    return resolved;
+  });
+
+  const contextFiles = input.contextFiles?.map((entry) => {
+    const resolved = path.resolve(resolvedRoot, entry);
+    if (!isSubpath(resolvedRoot, resolved)) {
+      throw new DelegateError(
+        `contextFiles entry escapes workspace root: ${entry}`,
         "blocked",
       );
     }
@@ -41,8 +56,14 @@ export function normalizeInput(input: DelegateInput, workspaceRoot: string): Nor
     ...input,
     cwd: resolvedCwd,
     workspaceRoot: resolvedRoot,
-    allowedFiles,
+    allowedPaths,
+    contextFiles,
+    resumed: Boolean(input.resumed),
   };
+}
+
+function stripSimpleGlobSuffix(value: string): string {
+  return value.replace(/[\\/]\*\*$/, "");
 }
 
 export function isSubpath(parent: string, candidate: string): boolean {
@@ -55,18 +76,18 @@ export function isSubpath(parent: string, candidate: string): boolean {
 export function isAllowedFilePath(
   candidate: string,
   cwd: string,
-  allowedFiles?: string[],
+  allowedPaths?: string[],
 ): boolean {
   const resolved = path.resolve(cwd, candidate);
   if (!isSubpath(cwd, resolved)) {
     return false;
   }
 
-  if (!allowedFiles || allowedFiles.length === 0) {
+  if (!allowedPaths || allowedPaths.length === 0) {
     return true;
   }
 
-  return allowedFiles.some((allowed) => isSubpath(allowed, resolved));
+  return allowedPaths.some((allowed) => isSubpath(allowed, resolved));
 }
 
 export function toRelativeDisplay(cwd: string, filePath: string): string {

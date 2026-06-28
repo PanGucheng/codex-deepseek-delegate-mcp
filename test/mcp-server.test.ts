@@ -20,8 +20,37 @@ describe("MCP server", () => {
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toContain("delegate_execute");
+    expect(tools.tools.map((tool) => tool.name)).toContain("delegate_task");
 
     const result = await client.callTool({
+      name: "delegate_task",
+      arguments: {
+        subagentType: "repo-scout",
+        description: "inspect nothing",
+        prompt: "inspect nothing",
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+    });
+
+    const structured = result.structuredContent as Record<string, unknown>;
+    const content = result.content as Array<{ type: string; text?: string }>;
+
+    expect(structured.taskId).toMatch(/^task_/);
+    expect(structured.subagentType).toBe("repo-scout");
+    expect(structured.status).toBe("completed");
+    expect(structured).toHaveProperty("summary");
+    expect(structured).toHaveProperty("changedFiles");
+    expect(structured).toHaveProperty("tests");
+    expect(structured).not.toHaveProperty("commandsRun");
+    expect(structured).not.toHaveProperty("sessionId");
+    expect(structured).not.toHaveProperty("logPath");
+    expect(content[0]?.type).toBe("text");
+    expect(content[0]?.text).not.toContain("commandsRun");
+    expect(content[0]?.text).not.toContain("logPath");
+
+    const legacy = await client.callTool({
       name: "delegate_execute",
       arguments: {
         task: "implement nothing",
@@ -30,12 +59,7 @@ describe("MCP server", () => {
         runVerification: false,
       },
     });
-
-    const structured = result.structuredContent as { status?: string };
-    const content = result.content as Array<{ type: string }>;
-
-    expect(structured.status).toBe("completed");
-    expect(content[0]?.type).toBe("text");
+    expect((legacy.structuredContent as Record<string, unknown>).subagentType).toBe("implementer");
 
     await client.close();
     await server.close();

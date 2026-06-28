@@ -1,26 +1,67 @@
 import path from "node:path";
-import { ConfigError } from "./config.js";
-import { getWorkspaceRoot } from "./config.js";
+import { ConfigError, getWorkspaceRoot } from "./config.js";
 import {
   createFileSnapshot,
   diffSnapshots,
   getGitChangedFiles,
+  isSubpath,
   normalizeInput,
 } from "./paths.js";
 import { createRunnerFromEnv } from "./runner.js";
 import { createSessionLog } from "./session-log.js";
 import {
+  createTaskId,
+  rememberTaskSession,
+  resolveResumeTask,
+} from "./task-session-store.js";
+import {
   DelegateError,
   DelegateInputSchema,
+  DelegateTaskInputSchema,
   type DelegateInput,
   type DelegateResult,
   type DelegateRunner,
+  type DelegateTaskInput,
+  type NormalizedDelegateInput,
+  type SubagentType,
 } from "./types.js";
 
 export type ExecuteDelegateOptions = {
   runner?: DelegateRunner;
   env?: NodeJS.ProcessEnv;
 };
+
+export async function executeDelegateTask(
+  rawInput: unknown,
+  options: ExecuteDelegateOptions = {},
+): Promise<DelegateResult> {
+  const env = options.env || process.env;
+  const workspaceRoot = path.resolve(getWorkspaceRoot(env));
+  const parsed = DelegateTaskInputSchema.safeParse(rawInput);
+
+  if (!parsed.success) {
+    return createBlockedResult(workspaceRoot, {
+      taskId: "task_invalid",
+      subagentType: "implementer",
+      request: rawInput,
+      summary: parsed.error.message,
+    });
+  }
+
+  let input: NormalizedDelegateInput;
+  try {
+    input = await prepareTaskInput(parsed.data, workspaceRoot);
+  } catch (error) {
+    return createBlockedResult(workspaceRoot, {
+      taskId: parsed.data.taskId || "task_blocked",
+      subagentType: parsed.data.subagentType,
+      request: parsed.data,
+      summary: errorToSummary(error),
+    });
+  }
+
+  return runDelegateTask(input, parsed.data, options);
+}
 
 export async function executeDelegate(
   rawInput: unknown,
@@ -32,29 +73,74 @@ export async function executeDelegate(
 
   if (!parsed.success) {
     return createBlockedResult(workspaceRoot, {
-      task: "<invalid>",
-      maxTurns: 1,
-      runVerification: false,
-    }, parsed.error.message);
+      taskId: "task_invalid",
+      subagentType: "implementer",
+      request: rawInput,
+      summary: parsed.error.message,
+    });
   }
 
-  let input;
-  try {
-    input = normalizeInput(parsed.data, workspaceRoot);
-  } catch (error) {
-    return createBlockedResult(workspaceRoot, parsed.data, errorToSummary(error));
+  return executeDelegateTask(legacyToTaskInput(parsed.data), options);
+}
+
+async function prepareTaskInput(
+  input: DelegateTaskInput,
+  workspaceRoot: string,
+): Promise<NormalizedDelegateInput> {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedCwd = path.resolve(input.cwd || resolvedRoot);
+
+  if (!isSubpath(resolvedRoot, resolvedCwd)) {
+    throw new DelegateError(
+      `cwd must stay inside workspace root. workspaceRoot=${resolvedRoot} cwd=${resolvedCwd}`,
+      "blocked",
+    );
   }
 
-  const log = await createSessionLog(input.cwd, parsed.data);
+  const task = await resolveResumeTask({
+    cwd: resolvedCwd,
+    taskId: input.taskId,
+    subagentType: input.subagentType,
+  });
+
+  return normalizeInput(
+    {
+      ...input,
+      taskId: task.taskId,
+      resumeSdkSessionId: task.record?.sdkSessionId,
+      resumed: task.resumed,
+    },
+    resolvedRoot,
+  );
+}
+
+async function runDelegateTask(
+  input: NormalizedDelegateInput,
+  request: DelegateTaskInput,
+  options: ExecuteDelegateOptions,
+): Promise<DelegateResult> {
+  const log = await createSessionLog(input.cwd, request);
+  const assignmentFilePath = await log.writeAssignment(input);
+  input = {
+    ...input,
+    assignmentFilePath,
+  };
+
   const commandsRun: DelegateResult["commandsRun"] = [];
   const tests: DelegateResult["tests"] = [];
-  const runner = options.runner || createRunnerFromEnv(env);
+  const runner = options.runner || createRunnerFromEnv(options.env || process.env);
 
   await log.append("start", {
+    taskId: input.taskId,
+    subagentType: input.subagentType,
     cwd: input.cwd,
     workspaceRoot: input.workspaceRoot,
-    allowedFiles: input.allowedFiles,
+    allowedPaths: input.allowedPaths,
+    contextFiles: input.contextFiles,
     maxTurns: input.maxTurns,
+    assignmentFilePath: input.assignmentFilePath,
+    resumed: input.resumed,
+    resumeSdkSessionId: input.resumeSdkSessionId,
   });
 
   const before = await createFileSnapshot(input.cwd);
@@ -72,6 +158,8 @@ export async function executeDelegate(
     const status =
       denied || error instanceof ConfigError || isBlockedDelegateError(error) ? "blocked" : "failed";
     result = {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
       status,
       summary: denied?.reason || errorToSummary(error),
       changedFiles: [],
@@ -79,6 +167,7 @@ export async function executeDelegate(
       tests,
       sessionId: log.sessionId,
       logPath: log.directory,
+      resumed: input.resumed,
     };
   }
 
@@ -90,33 +179,80 @@ export async function executeDelegate(
     ...(gitChangedFiles ?? snapshotChangedFiles),
   ]);
 
-  const finalResult = {
+  const finalResult: DelegateResult = {
     ...result,
+    taskId: input.taskId,
+    subagentType: input.subagentType,
     changedFiles,
     commandsRun: uniqueCommands(result.commandsRun),
     tests: result.tests,
     sessionId: log.sessionId,
     logPath: log.directory,
+    resumed: input.resumed,
   };
+
+  if (finalResult.status === "completed" && finalResult.sdkSessionId && finalResult.sdkModel) {
+    await rememberTaskSession({
+      cwd: input.cwd,
+      taskId: input.taskId,
+      sdkSessionId: finalResult.sdkSessionId,
+      subagentType: input.subagentType,
+      model: finalResult.sdkModel,
+      allowedPaths: input.allowedPaths,
+      delegateSessionId: log.sessionId,
+    });
+  }
 
   await log.writeResult(finalResult);
   await log.append("finish", {
+    taskId: finalResult.taskId,
+    subagentType: finalResult.subagentType,
     status: finalResult.status,
     changedFiles: finalResult.changedFiles,
     commandsRun: finalResult.commandsRun,
     tests: finalResult.tests,
+    sdkSessionId: finalResult.sdkSessionId,
   });
 
   return finalResult;
 }
 
+function legacyToTaskInput(input: DelegateInput): DelegateTaskInput {
+  return {
+    subagentType: "implementer",
+    description: firstLine(input.task),
+    prompt: [
+      input.task,
+      "",
+      "Plan from Codex:",
+      input.plan || "(No separate plan provided. Infer the smallest safe implementation.)",
+    ].join("\n"),
+    cwd: input.cwd,
+    allowedPaths: input.allowedFiles,
+    taskId: input.taskId,
+    maxTurns: input.maxTurns,
+    runVerification: input.runVerification,
+  };
+}
+
 async function createBlockedResult(
   workspaceRoot: string,
-  input: DelegateInput,
-  summary: string,
+  {
+    taskId,
+    subagentType,
+    request,
+    summary,
+  }: {
+    taskId: string;
+    subagentType: SubagentType;
+    request: unknown;
+    summary: string;
+  },
 ): Promise<DelegateResult> {
-  const log = await createSessionLog(workspaceRoot, input);
+  const log = await createSessionLog(workspaceRoot, request);
   const result: DelegateResult = {
+    taskId: taskId === "task_blocked" ? createTaskId() : taskId,
+    subagentType,
     status: "blocked",
     summary,
     changedFiles: [],
@@ -124,6 +260,7 @@ async function createBlockedResult(
     tests: [],
     sessionId: log.sessionId,
     logPath: log.directory,
+    resumed: false,
   };
   await log.writeResult(result);
   return result;
@@ -156,4 +293,8 @@ function uniqueCommands(commands: DelegateResult["commandsRun"]): DelegateResult
     result.push(command);
   }
   return result;
+}
+
+function firstLine(value: string): string {
+  return value.split(/\r?\n/, 1)[0]?.trim() || "Delegated implementation task";
 }

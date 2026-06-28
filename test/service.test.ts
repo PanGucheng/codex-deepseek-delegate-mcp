@@ -2,13 +2,19 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { executeDelegate } from "../src/service.js";
+import { executeDelegate, executeDelegateTask } from "../src/service.js";
+import { readTaskSessionRegistry } from "../src/task-session-store.js";
 import type { DelegateResult, DelegateRunner, NormalizedDelegateInput, RunnerContext } from "../src/types.js";
 
 class FileWritingRunner implements DelegateRunner {
+  lastInput?: NormalizedDelegateInput;
+
   async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    this.lastInput = input;
     await fs.writeFile(path.join(input.cwd, "worker-output.txt"), "done", "utf8");
     return {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
       status: "completed",
       summary: "wrote worker-output.txt",
       changedFiles: [],
@@ -16,29 +22,102 @@ class FileWritingRunner implements DelegateRunner {
       tests: context.tests,
       sessionId: context.sessionId,
       logPath: context.logPath,
+      sdkSessionId: "11111111-1111-4111-8111-111111111111",
+      sdkModel: "deepseek-test",
+      resumed: input.resumed,
     };
   }
 }
 
 describe("executeDelegate", () => {
-  it("returns changed files and writes a result log", async () => {
+  it("keeps the legacy delegate_execute wrapper working", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-service-"));
+    const runner = new FileWritingRunner();
     const result = await executeDelegate(
       {
         task: "write a file",
+        plan: "create worker-output.txt",
         cwd,
         maxTurns: 1,
         runVerification: false,
       },
       {
-        runner: new FileWritingRunner(),
+        runner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(result.taskId).toMatch(/^task_/);
+    expect(result.subagentType).toBe("implementer");
+    expect(result.status).toBe("completed");
+    expect(result.changedFiles).toContain("worker-output.txt");
+    await expect(fs.stat(path.join(result.logPath, "result.json"))).resolves.toBeTruthy();
+    expect(runner.lastInput?.assignmentFilePath).toBe(path.join(result.logPath, "assignment.md"));
+
+    const assignment = await fs.readFile(runner.lastInput!.assignmentFilePath!, "utf8");
+    expect(assignment).toContain("Subagent type: implementer");
+    expect(assignment).toContain("## Prompt");
+    expect(assignment).toContain("write a file");
+    expect(assignment).toContain("create worker-output.txt");
+  });
+
+  it("creates a fresh task registry record for delegate_task", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-service-"));
+    const runner = new FileWritingRunner();
+    const result = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "write worker output",
+        prompt: "write a file",
+        cwd,
+        allowedPaths: ["src/**"],
+        contextFiles: [],
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner,
         env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
       },
     );
 
     expect(result.status).toBe("completed");
-    expect(result.changedFiles).toContain("worker-output.txt");
-    await expect(fs.stat(path.join(result.logPath, "result.json"))).resolves.toBeTruthy();
+    expect(result.taskId).toMatch(/^task_/);
+    expect(runner.lastInput?.resumed).toBe(false);
+    expect(runner.lastInput?.allowedPaths?.[0]).toBe(path.join(cwd, "src"));
+
+    const registry = await readTaskSessionRegistry(cwd);
+    expect(registry.tasks[result.taskId]).toMatchObject({
+      taskId: result.taskId,
+      sdkSessionId: "11111111-1111-4111-8111-111111111111",
+      subagentType: "implementer",
+      model: "deepseek-test",
+    });
+  });
+
+  it("blocks an unknown taskId before invoking the runner", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-service-"));
+    const runner = new FileWritingRunner();
+    const result = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "resume missing task",
+        prompt: "continue",
+        taskId: "task_missing",
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(result.status).toBe("blocked");
+    expect(result.taskId).toBe("task_missing");
+    expect(result.summary).toMatch(/taskId was not found/);
+    expect(runner.lastInput).toBeUndefined();
   });
 
   it("blocks invalid cwd before invoking a runner", async () => {

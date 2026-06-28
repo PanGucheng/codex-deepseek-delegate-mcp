@@ -1,11 +1,40 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import path from "node:path";
 import type { CommandRecord, NormalizedDelegateInput, TestRecord } from "./types.js";
-import { extractToolPaths, isAllowedFilePath } from "./paths.js";
+import { extractToolPaths, isAllowedFilePath, isSubpath } from "./paths.js";
 
-type CommandDecision = {
+export type CommandDecision = {
   allowed: boolean;
   reason: string;
   command?: string;
+  writesFiles?: boolean;
+  reviewable?: boolean;
+};
+
+type CommandPolicyContext = {
+  cwd?: string;
+  allowedPaths?: string[];
+};
+
+export type CommandReviewRequest = {
+  command: string;
+  cwd: string;
+  allowedPaths?: string[];
+  task: string;
+  plan?: string;
+  policyReason: string;
+};
+
+export type CommandReviewDecision = {
+  allowed: boolean;
+  reason: string;
+  model?: string;
+};
+
+export type CommandReviewer = (request: CommandReviewRequest) => Promise<CommandReviewDecision>;
+
+type CanUseToolOptions = {
+  commandReviewer?: CommandReviewer;
 };
 
 const SAFE_READ_ONLY_COMMANDS = [
@@ -18,6 +47,7 @@ const SAFE_READ_ONLY_COMMANDS = [
   /^rg(\s|$)/i,
   /^grep(\s|$)/i,
   /^find\s+/i,
+  /^node\s+--version$/i,
   /^git\s+(status|diff|log|show|rev-parse|ls-files|branch\s+--show-current)(\s|$)/i,
 ];
 
@@ -49,10 +79,12 @@ const DENIED_PATTERNS: Array<[RegExp, string]> = [
   [/\bnpm\s+config\b/i, "npm config changes are denied"],
   [/\b(?:curl|wget|iwr|invoke-webrequest)\b[\s\S]*(?:\|\s*(?:sh|bash|pwsh|powershell)|\biex\b|\binvoke-expression\b)/i, "download-and-execute commands are denied"],
   [/\b(?:setx|reg\s+(?:add|delete)|chmod\s+777)\b/i, "global or broad permission changes are denied"],
-  [/[<>]\s*\S+/, "shell redirection is denied by the default policy"],
 ];
 
-export function classifyCommand(command: string): CommandDecision {
+export function classifyCommand(
+  command: string,
+  context: CommandPolicyContext = {},
+): CommandDecision {
   const trimmed = command.trim();
   if (!trimmed) {
     return { allowed: false, reason: "empty command", command };
@@ -64,7 +96,52 @@ export function classifyCommand(command: string): CommandDecision {
     }
   }
 
-  const parts = splitCommand(trimmed);
+  const normalized = normalizeCommandCwd(trimmed, context);
+  if (!normalized.allowed) {
+    return normalized;
+  }
+
+  const normalizedCommand = normalized.command || trimmed;
+  const safeWrite = parseSafeWriteCommand(normalizedCommand);
+  if (safeWrite) {
+    if (!context.cwd) {
+      return {
+        allowed: false,
+        reason: "file write command requires cwd policy context",
+        command: trimmed,
+      };
+    }
+
+    const deniedPath = safeWrite.targetPaths.find(
+      (targetPath) =>
+        !isWriteTargetAllowed(targetPath, normalized.cwd || context.cwd!, context.cwd!, context.allowedPaths),
+    );
+
+    if (deniedPath) {
+      return {
+        allowed: false,
+        reason: `file write target escapes cwd or allowedPaths: ${deniedPath}`,
+        command: trimmed,
+      };
+    }
+
+    return {
+      allowed: true,
+      reason: `file write command is allowed for ${safeWrite.targetPaths.join(", ")}`,
+      command: trimmed,
+      writesFiles: true,
+    };
+  }
+
+  if (hasShellRedirection(normalizedCommand)) {
+    return {
+      allowed: false,
+      reason: "shell redirection is allowed only for simple, parseable file writes",
+      command: trimmed,
+    };
+  }
+
+  const parts = splitCommand(normalizedCommand);
   if (parts.length === 0) {
     return { allowed: false, reason: "empty command", command: trimmed };
   }
@@ -75,6 +152,7 @@ export function classifyCommand(command: string): CommandDecision {
         allowed: false,
         reason: `command is not in the default allowlist: ${part}`,
         command: trimmed,
+        reviewable: true,
       };
     }
   }
@@ -96,21 +174,27 @@ function isSafeSubcommand(command: string): boolean {
 }
 
 export function isVerificationCommand(command: string): boolean {
-  return SAFE_VERIFICATION_COMMANDS.some((pattern) => pattern.test(command.trim()));
+  const normalized = stripLeadingCd(command.trim());
+  return SAFE_VERIFICATION_COMMANDS.some((pattern) => pattern.test(normalized));
 }
 
 export function createCanUseTool(
   input: NormalizedDelegateInput,
   commandsRun: CommandRecord[],
   tests: TestRecord[],
+  options: CanUseToolOptions = {},
 ): CanUseTool {
   return async (toolName, toolInput): Promise<PermissionResult> => {
-    const decision = authorizeTool(toolName, toolInput, input);
+    const decision = await reviewIfNeeded(
+      authorizeTool(toolName, toolInput, input),
+      input,
+      options.commandReviewer,
+    );
 
     if (decision.command) {
       commandsRun.push({
         command: decision.command,
-        status: decision.allowed ? "allowed" : "denied",
+        status: commandStatus(decision),
         reason: decision.reason,
       });
 
@@ -138,25 +222,292 @@ export function authorizeTool(
 ): CommandDecision {
   if (toolName === "Bash") {
     const command = String(toolInput.command || "");
-    return classifyCommand(command);
+    if (input.subagentType === "repo-scout") {
+      return {
+        allowed: false,
+        reason: "repo-scout is read-only and cannot use Bash",
+        command,
+      };
+    }
+    return classifyCommand(command, {
+      cwd: input.cwd,
+      allowedPaths: input.allowedPaths,
+    });
   }
 
-  const allowedToolNames = new Set(["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"]);
+  const allowedToolNames =
+    input.subagentType === "repo-scout"
+      ? new Set(["Read", "LS", "Grep", "Glob"])
+      : new Set(["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"]);
   if (!allowedToolNames.has(toolName)) {
     return {
       allowed: false,
-      reason: `tool is not available to the delegated worker: ${toolName}`,
+      reason: `tool is not available to ${input.subagentType}: ${toolName}`,
     };
   }
 
   for (const candidate of extractToolPaths(toolName, toolInput)) {
-    if (!isAllowedFilePath(candidate, input.cwd, input.allowedFiles)) {
+    if (toolName === "Read" && isReadOnlyMetadataPath(candidate, input)) {
+      continue;
+    }
+
+    if (!isAllowedFilePath(candidate, input.cwd, input.allowedPaths)) {
       return {
         allowed: false,
-        reason: `tool path escapes cwd or allowedFiles: ${candidate}`,
+        reason: `tool path escapes cwd or allowedPaths: ${candidate}`,
       };
     }
   }
 
   return { allowed: true, reason: "tool is allowed by the default policy" };
+}
+
+function isReadOnlyMetadataPath(candidate: string, input: NormalizedDelegateInput): boolean {
+  const resolved = path.resolve(input.cwd, candidate);
+  if (input.assignmentFilePath && resolved === path.resolve(input.assignmentFilePath)) {
+    return true;
+  }
+
+  return Boolean(input.contextFiles?.some((file) => resolved === path.resolve(file)));
+}
+
+async function reviewIfNeeded(
+  decision: CommandDecision,
+  input: NormalizedDelegateInput,
+  commandReviewer?: CommandReviewer,
+): Promise<CommandDecision> {
+  if (decision.allowed || !decision.reviewable || !decision.command) {
+    return decision;
+  }
+
+  if (!commandReviewer) {
+    return {
+      ...decision,
+      allowed: false,
+      reason: `${decision.reason}; GPT command reviewer is not configured`,
+    };
+  }
+
+  try {
+    const review = await commandReviewer({
+      command: decision.command,
+      cwd: input.cwd,
+      allowedPaths: input.allowedPaths,
+      task: input.prompt,
+      plan: input.description,
+      policyReason: decision.reason,
+    });
+
+    if (!review.allowed) {
+      return {
+        ...decision,
+        allowed: false,
+        reason: `GPT command reviewer denied: ${review.reason}`,
+      };
+    }
+
+    const modelSuffix = review.model ? ` (${review.model})` : "";
+    return {
+      ...decision,
+      allowed: true,
+      writesFiles: false,
+      reason: `GPT command reviewer allowed${modelSuffix}: ${review.reason}`,
+      reviewable: true,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ...decision,
+      allowed: false,
+      reason: `GPT command reviewer failed closed: ${message}`,
+    };
+  }
+}
+
+function commandStatus(decision: CommandDecision): CommandRecord["status"] {
+  if (!decision.allowed) {
+    return "denied";
+  }
+
+  if (decision.writesFiles) {
+    return "allowed-write";
+  }
+
+  if (decision.reviewable) {
+    return "allowed-review";
+  }
+
+  return "allowed";
+}
+
+function normalizeCommandCwd(
+  command: string,
+  context: CommandPolicyContext,
+): CommandDecision & { cwd?: string } {
+  const cdPrefix = /^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s&;]+))\s*&&\s*([\s\S]+)$/i.exec(command);
+  if (!cdPrefix) {
+    return {
+      allowed: true,
+      reason: "command cwd did not change",
+      command,
+      cwd: context.cwd,
+    };
+  }
+
+  if (!context.cwd) {
+    return {
+      allowed: false,
+      reason: "cd command requires cwd policy context",
+      command,
+    };
+  }
+
+  const requestedCwd = cdPrefix[1] || cdPrefix[2] || cdPrefix[3];
+  const nextCommand = cdPrefix[4].trim();
+  const resolvedCwd = path.resolve(context.cwd, requestedCwd);
+
+  if (!isSubpath(context.cwd, resolvedCwd)) {
+    return {
+      allowed: false,
+      reason: `cd target escapes cwd: ${requestedCwd}`,
+      command,
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "command cwd is allowed",
+    command: nextCommand,
+    cwd: resolvedCwd,
+  };
+}
+
+function stripLeadingCd(command: string): string {
+  const cdPrefix = /^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s&;]+))\s*&&\s*([\s\S]+)$/i.exec(command);
+  return cdPrefix ? cdPrefix[4].trim() : command;
+}
+
+function parseSafeWriteCommand(command: string): { targetPaths: string[] } | undefined {
+  const redirectionTarget = parseSimpleRedirectionWrite(command);
+  if (redirectionTarget) {
+    return { targetPaths: [redirectionTarget] };
+  }
+
+  const powershellTarget = parsePowerShellWrite(command);
+  if (powershellTarget) {
+    return { targetPaths: [powershellTarget] };
+  }
+
+  const sedTarget = parseSedInPlaceWrite(command);
+  if (sedTarget) {
+    return { targetPaths: [sedTarget] };
+  }
+
+  const nodeTargets = parseNodeWrite(command);
+  if (nodeTargets.length > 0) {
+    return { targetPaths: nodeTargets };
+  }
+
+  const pythonTargets = parsePythonWrite(command);
+  if (pythonTargets.length > 0) {
+    return { targetPaths: pythonTargets };
+  }
+
+  return undefined;
+}
+
+function parseSimpleRedirectionWrite(command: string): string | undefined {
+  const echoLike = /^\s*(?:echo|printf)\b[\s\S]+?\s>{1,2}\s*(?:"([^"]+)"|'([^']+)'|([^\s&|;<>]+))\s*$/i.exec(command);
+  if (echoLike) {
+    return echoLike[1] || echoLike[2] || echoLike[3];
+  }
+
+  const heredoc = /^\s*cat\s+>{1,2}\s*(?:"([^"]+)"|'([^']+)'|([^\s&|;<>]+))\s+<<\w+/i.exec(command);
+  if (heredoc) {
+    return heredoc[1] || heredoc[2] || heredoc[3];
+  }
+
+  return undefined;
+}
+
+function parsePowerShellWrite(command: string): string | undefined {
+  const match = /\b(?:set-content|out-file)\b[\s\S]*?-(?:literalpath|filepath|path)\s+(?:"([^"]+)"|'([^']+)'|([^\s|;]+))/i.exec(command);
+  return match ? match[1] || match[2] || match[3] : undefined;
+}
+
+function parseSedInPlaceWrite(command: string): string | undefined {
+  const match = /^\s*sed\s+-i\s+(?:"s(.).+\1.*\1[gp]*"|'s(.).+\2.*\2[gp]*')\s+(?:"([^"]+)"|'([^']+)'|([^\s&|;<>]+))\s*$/i.exec(command);
+  return match ? match[3] || match[4] || match[5] : undefined;
+}
+
+function parseNodeWrite(command: string): string[] {
+  const script = parseInlineScript(command, "node");
+  if (!script) {
+    return [];
+  }
+
+  return collectMatches(
+    script,
+    /(?:writeFileSync|writeFile)\s*\(\s*(?:"([^"]+)"|'([^']+)'|`([^`]+)`)/gi,
+  );
+}
+
+function parsePythonWrite(command: string): string[] {
+  const script = parseInlineScript(command, "python");
+  if (!script) {
+    return [];
+  }
+
+  return [
+    ...collectMatches(script, /\bopen\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"[wa]"|'[wa]')/gi),
+    ...collectMatches(script, /Path\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\.write_(?:text|bytes)\s*\(/gi),
+  ];
+}
+
+function parseInlineScript(command: string, executable: "node" | "python"): string | undefined {
+  const match = new RegExp(`^\\s*${executable}\\s+-[ec]\\s+(?:"([\\s\\S]*)"|'([\\s\\S]*)')\\s*$`, "i").exec(command);
+  return match ? match[1] || match[2] : undefined;
+}
+
+function collectMatches(source: string, pattern: RegExp): string[] {
+  const result: string[] = [];
+  for (const match of source.matchAll(pattern)) {
+    const value = match[1] || match[2] || match[3];
+    if (value) {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+function hasShellRedirection(command: string): boolean {
+  return /(?:^|\s)(?:>{1,2}|<)(?:\s|\S)/.test(command);
+}
+
+function isWriteTargetAllowed(
+  targetPath: string,
+  commandCwd: string,
+  rootCwd: string,
+  allowedPaths?: string[],
+): boolean {
+  const resolved = resolveWriteTarget(commandCwd, targetPath);
+
+  if (!isSubpath(rootCwd, resolved)) {
+    return false;
+  }
+
+  if (!allowedPaths || allowedPaths.length === 0) {
+    return true;
+  }
+
+  return allowedPaths.some((allowed) => isSubpath(allowed, resolved));
+}
+
+function resolveWriteTarget(commandCwd: string, targetPath: string): string {
+  const msysPath = /^\/([a-zA-Z])\/(.+)$/.exec(targetPath);
+  if (msysPath && process.platform === "win32") {
+    return path.resolve(`${msysPath[1].toUpperCase()}:/${msysPath[2]}`);
+  }
+
+  return path.resolve(commandCwd, targetPath);
 }

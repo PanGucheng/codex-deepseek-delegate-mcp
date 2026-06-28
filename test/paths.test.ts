@@ -9,9 +9,36 @@ describe("path normalization", () => {
     const root = path.resolve(os.tmpdir(), "delegate-root");
     const cwd = path.join(root, "project");
 
-    expect(normalizeInput({ task: "x", cwd, maxTurns: 1, runVerification: false }, root).cwd).toBe(cwd);
+    expect(
+      normalizeInput(
+        {
+          taskId: "task_test",
+          subagentType: "implementer",
+          description: "x",
+          prompt: "x",
+          cwd,
+          maxTurns: 1,
+          runVerification: false,
+          allowedPaths: ["src/**"],
+          resumed: false,
+        },
+        root,
+      ).cwd,
+    ).toBe(cwd);
     expect(() =>
-      normalizeInput({ task: "x", cwd: path.dirname(root), maxTurns: 1, runVerification: false }, root),
+      normalizeInput(
+        {
+          taskId: "task_test",
+          subagentType: "implementer",
+          description: "x",
+          prompt: "x",
+          cwd: path.dirname(root),
+          maxTurns: 1,
+          runVerification: false,
+          resumed: false,
+        },
+        root,
+      ),
     ).toThrow(/cwd must stay inside workspace root/);
   });
 

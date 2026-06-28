@@ -1,4 +1,5 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createCommandReviewer } from "./command-reviewer.js";
 import { buildDeepSeekEnv, type ProcessEnv } from "./config.js";
 import { createCanUseTool } from "./security.js";
 import type {
@@ -8,36 +9,56 @@ import type {
   RunnerContext,
 } from "./types.js";
 
-const WORKER_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
-const AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob", "TodoWrite"];
+const IMPLEMENTER_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
+const IMPLEMENTER_AUTO_ALLOWED_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
+const SCOUT_TOOLS = ["Read", "LS", "Grep", "Glob"];
+const SCOUT_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob"];
 
 export class ClaudeRunner implements DelegateRunner {
   constructor(private readonly env: ProcessEnv = process.env) {}
 
   async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
     const deepSeek = buildDeepSeekEnv(this.env);
+    const commandReviewer = createCommandReviewer(this.env);
+    const model = deepSeek.env.ANTHROPIC_MODEL || "";
     const prompt = buildWorkerPrompt(input);
     let finalSummary = "";
     let status: DelegateResult["status"] = "failed";
+    let sdkSessionId = input.resumeSdkSessionId;
+    const tools = input.subagentType === "repo-scout" ? SCOUT_TOOLS : IMPLEMENTER_TOOLS;
+    const allowedTools =
+      input.subagentType === "repo-scout" ? SCOUT_AUTO_ALLOWED_TOOLS : IMPLEMENTER_AUTO_ALLOWED_TOOLS;
+
+    await contextLog(context, "task_session", {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      resumed: input.resumed,
+      resumeSdkSessionId: input.resumeSdkSessionId,
+      persistSession: true,
+    });
 
     const iterator = query({
       prompt,
       options: {
         cwd: input.cwd,
         env: deepSeek.env,
-        model: deepSeek.env.ANTHROPIC_MODEL,
+        model,
         maxTurns: input.maxTurns,
-        permissionMode: "acceptEdits",
-        tools: WORKER_TOOLS,
-        allowedTools: AUTO_ALLOWED_TOOLS,
-        canUseTool: createCanUseTool(input, context.commandsRun, context.tests),
-        persistSession: false,
+        permissionMode: input.subagentType === "repo-scout" ? "default" : "acceptEdits",
+        tools,
+        allowedTools,
+        canUseTool: createCanUseTool(input, context.commandsRun, context.tests, {
+          commandReviewer,
+        }),
+        persistSession: true,
         enableFileCheckpointing: true,
         includePartialMessages: false,
+        ...(input.resumeSdkSessionId ? { resume: input.resumeSdkSessionId } : {}),
       },
     });
 
     for await (const message of iterator) {
+      sdkSessionId = getMessageSessionId(message) || sdkSessionId;
       await contextLog(context, "sdk_message", summarizeMessage(message));
 
       const observedCommands = extractBashCommands(message);
@@ -77,6 +98,8 @@ export class ClaudeRunner implements DelegateRunner {
     }
 
     return {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
       status,
       summary: finalSummary || "Delegate finished without a final summary.",
       changedFiles: [],
@@ -84,40 +107,41 @@ export class ClaudeRunner implements DelegateRunner {
       tests: context.tests,
       sessionId: context.sessionId,
       logPath: context.logPath,
+      sdkSessionId,
+      sdkModel: model,
+      resumed: input.resumed,
     };
   }
 }
 
 function buildWorkerPrompt(input: NormalizedDelegateInput): string {
-  const allowedFiles = input.allowedFiles?.length
-    ? input.allowedFiles.map((file) => `- ${file}`).join("\n")
-    : "- Any file under cwd, unless blocked by tool policy";
+  const assignmentFile = input.assignmentFilePath || "(assignment file was not provided)";
 
   return [
     "You are a delegated implementation worker called by Codex.",
+    `Subagent type: ${input.subagentType}`,
     "",
-    "Codex owns planning and final review. Your job is to implement the supplied plan inside the requested cwd.",
+    "Codex owns planning and final review. Your full assignment is stored in a local file, not in this chat prompt.",
+    "Read the assignment file before making changes, then implement exactly what it asks.",
+    "This assignment file supersedes any previous assignment or file-scope instruction in this conversation.",
+    `Assignment file: ${assignmentFile}`,
+    "",
+    input.subagentType === "repo-scout"
+      ? "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise rationale. Do not edit files or use Bash."
+      : "Implement the assignment. File edits are normal work. Prefer Edit, MultiEdit, or Write. Bash is policy-gated and must target explicit in-scope files.",
+    "Do not call other subagents or task tools. Subagent depth is fixed at 1.",
     "Keep changes tightly scoped, do not modify global configuration, do not push commits, and do not run destructive commands.",
-    "Use only the tools made available by the host. Bash is policy-gated; prefer direct file/search tools when possible.",
-    "Never use Bash to create, overwrite, append, or edit files. Shell redirection is blocked. Use Edit, MultiEdit, or Write for file changes.",
+    "Use only the tools made available by the host.",
     "",
     `cwd: ${input.cwd}`,
-    "Allowed file scope:",
-    allowedFiles,
-    "",
-    "Task:",
-    input.task,
-    "",
-    "Plan:",
-    input.plan || "(No separate plan provided. Infer the smallest safe implementation from the task.)",
-    "",
-    `Verification requested: ${input.runVerification ? "yes" : "no"}`,
-    input.runVerification
-      ? "Run verification only with the safe commands allowed by the host policy."
-      : "Do not run verification commands unless they are necessary to understand the implementation.",
-    "",
     "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
   ].join("\n");
+}
+
+function getMessageSessionId(message: SDKMessage): string | undefined {
+  return "session_id" in message && typeof message.session_id === "string"
+    ? message.session_id
+    : undefined;
 }
 
 function extractAssistantText(message: Extract<SDKMessage, { type: "assistant" }>): string {
