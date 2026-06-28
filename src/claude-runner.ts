@@ -1,0 +1,219 @@
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { buildDeepSeekEnv, type ProcessEnv } from "./config.js";
+import { createCanUseTool } from "./security.js";
+import type {
+  DelegateResult,
+  DelegateRunner,
+  NormalizedDelegateInput,
+  RunnerContext,
+} from "./types.js";
+
+const WORKER_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
+const AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob", "TodoWrite"];
+
+export class ClaudeRunner implements DelegateRunner {
+  constructor(private readonly env: ProcessEnv = process.env) {}
+
+  async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    const deepSeek = buildDeepSeekEnv(this.env);
+    const prompt = buildWorkerPrompt(input);
+    let finalSummary = "";
+    let status: DelegateResult["status"] = "failed";
+
+    const iterator = query({
+      prompt,
+      options: {
+        cwd: input.cwd,
+        env: deepSeek.env,
+        model: deepSeek.env.ANTHROPIC_MODEL,
+        maxTurns: input.maxTurns,
+        permissionMode: "acceptEdits",
+        tools: WORKER_TOOLS,
+        allowedTools: AUTO_ALLOWED_TOOLS,
+        canUseTool: createCanUseTool(input, context.commandsRun, context.tests),
+        persistSession: false,
+        enableFileCheckpointing: true,
+        includePartialMessages: false,
+      },
+    });
+
+    for await (const message of iterator) {
+      await contextLog(context, "sdk_message", summarizeMessage(message));
+
+      const observedCommands = extractBashCommands(message);
+      for (const command of observedCommands) {
+        if (!context.commandsRun.some((record) => record.command === command)) {
+          context.commandsRun.push({ command, status: "observed" });
+        }
+      }
+
+      if (message.type === "assistant") {
+        const text = extractAssistantText(message);
+        if (text) {
+          finalSummary = text;
+        }
+      }
+
+      if (message.type === "result") {
+        if (message.subtype === "success") {
+          status = "completed";
+          finalSummary = message.result || finalSummary || "Delegate completed.";
+        } else {
+          status = context.commandsRun.some((command) => command.status === "denied")
+            ? "blocked"
+            : "failed";
+          finalSummary =
+            message.errors?.join("\n") ||
+            finalSummary ||
+            `Delegate failed with result subtype ${message.subtype}.`;
+        }
+      }
+    }
+
+    if (context.commandsRun.some((command) => command.status === "denied")) {
+      status = "blocked";
+      const denied = context.commandsRun.find((command) => command.status === "denied");
+      finalSummary = denied?.reason || finalSummary || "Delegate was blocked by the safety policy.";
+    }
+
+    return {
+      status,
+      summary: finalSummary || "Delegate finished without a final summary.",
+      changedFiles: [],
+      commandsRun: context.commandsRun,
+      tests: context.tests,
+      sessionId: context.sessionId,
+      logPath: context.logPath,
+    };
+  }
+}
+
+function buildWorkerPrompt(input: NormalizedDelegateInput): string {
+  const allowedFiles = input.allowedFiles?.length
+    ? input.allowedFiles.map((file) => `- ${file}`).join("\n")
+    : "- Any file under cwd, unless blocked by tool policy";
+
+  return [
+    "You are a delegated implementation worker called by Codex.",
+    "",
+    "Codex owns planning and final review. Your job is to implement the supplied plan inside the requested cwd.",
+    "Keep changes tightly scoped, do not modify global configuration, do not push commits, and do not run destructive commands.",
+    "Use only the tools made available by the host. Bash is policy-gated; prefer direct file/search tools when possible.",
+    "Never use Bash to create, overwrite, append, or edit files. Shell redirection is blocked. Use Edit, MultiEdit, or Write for file changes.",
+    "",
+    `cwd: ${input.cwd}`,
+    "Allowed file scope:",
+    allowedFiles,
+    "",
+    "Task:",
+    input.task,
+    "",
+    "Plan:",
+    input.plan || "(No separate plan provided. Infer the smallest safe implementation from the task.)",
+    "",
+    `Verification requested: ${input.runVerification ? "yes" : "no"}`,
+    input.runVerification
+      ? "Run verification only with the safe commands allowed by the host policy."
+      : "Do not run verification commands unless they are necessary to understand the implementation.",
+    "",
+    "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
+  ].join("\n");
+}
+
+function extractAssistantText(message: Extract<SDKMessage, { type: "assistant" }>): string {
+  const content = message.message.content;
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((block) => {
+      if (typeof block === "object" && block && "type" in block && block.type === "text") {
+        return "text" in block && typeof block.text === "string" ? block.text : "";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function extractBashCommands(message: SDKMessage): string[] {
+  if (message.type !== "assistant") {
+    return [];
+  }
+
+  const content = message.message.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content
+    .map((block) => {
+      if (
+        typeof block === "object" &&
+        block &&
+        "type" in block &&
+        block.type === "tool_use" &&
+        "name" in block &&
+        block.name === "Bash" &&
+        "input" in block &&
+        typeof block.input === "object" &&
+        block.input &&
+        "command" in block.input &&
+        typeof block.input.command === "string"
+      ) {
+        return block.input.command;
+      }
+      return undefined;
+    })
+    .filter((command): command is string => Boolean(command));
+}
+
+function summarizeMessage(message: SDKMessage): Record<string, unknown> {
+  if (message.type === "assistant") {
+    return {
+      type: message.type,
+      session_id: message.session_id,
+      has_error: Boolean(message.error),
+      text: truncate(extractAssistantText(message)),
+    };
+  }
+
+  if (message.type === "result") {
+    return {
+      type: message.type,
+      subtype: message.subtype,
+      is_error: message.is_error,
+      num_turns: message.num_turns,
+      session_id: message.session_id,
+    };
+  }
+
+  if (message.type === "system") {
+    return {
+      type: message.type,
+      subtype: "subtype" in message ? message.subtype : undefined,
+      session_id: "session_id" in message ? message.session_id : undefined,
+    };
+  }
+
+  return { type: message.type };
+}
+
+async function contextLog(
+  context: RunnerContext,
+  event: string,
+  payload: unknown,
+): Promise<void> {
+  await import("node:fs/promises").then((fs) =>
+    fs.appendFile(
+      `${context.logPath}/events.jsonl`,
+      `${JSON.stringify({ ts: new Date().toISOString(), event, payload })}\n`,
+      "utf8",
+    ),
+  );
+}
+
+function truncate(value: string, max = 4000): string {
+  return value.length > max ? `${value.slice(0, max)}\n<truncated>` : value;
+}
