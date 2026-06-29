@@ -289,6 +289,16 @@ async function requestApprovalIfNeeded(
     return decision;
   }
 
+  if (isPreApprovedCommand(decision.command, input.approvedCommands)) {
+    return {
+      ...decision,
+      allowed: true,
+      writesFiles: false,
+      reason: "Codex pre-approved exact command in delegate_task input",
+      approvedByCodex: true,
+    };
+  }
+
   if (!commandApprovalHandler) {
     return {
       ...decision,
@@ -332,6 +342,19 @@ async function requestApprovalIfNeeded(
       reason: `Codex command approval failed: ${message}`,
     };
   }
+}
+
+function isPreApprovedCommand(command: string, approvedCommands?: string[]): boolean {
+  if (!approvedCommands?.length) {
+    return false;
+  }
+
+  const trimmed = command.trim();
+  const withoutCd = stripLeadingCd(trimmed);
+  return approvedCommands.some((approved) => {
+    const approvedTrimmed = approved.trim();
+    return approvedTrimmed === trimmed || approvedTrimmed === withoutCd;
+  });
 }
 
 function commandStatus(decision: CommandDecision): CommandRecord["status"] {

@@ -10,6 +10,7 @@ export const DelegateTaskInputSchema = z
     cwd: z.string().optional(),
     allowedPaths: z.array(z.string().min(1)).optional(),
     contextFiles: z.array(z.string().min(1)).optional(),
+    approvedCommands: z.array(z.string().min(1)).optional(),
     taskId: z.string().min(1).max(160).optional(),
     maxTurns: z.number().int().min(1).max(100).default(12),
     runVerification: z.boolean().default(true),
@@ -109,6 +110,8 @@ export type RunnerContext = {
   commandsRun: CommandRecord[];
   tests: TestRecord[];
   commandApprovalHandler?: CommandApprovalHandler;
+  sdkSessionId?: string;
+  sdkModel?: string;
 };
 
 export interface DelegateRunner {

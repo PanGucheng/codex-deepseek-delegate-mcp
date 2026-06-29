@@ -179,6 +179,52 @@ describe("tool policy", () => {
     expect(commandsRun[0]?.reason).toContain("Codex approved command");
   });
 
+  it("allows exact pre-approved Bash commands without an interactive approval handler", async () => {
+    const commandsRun: CommandRecord[] = [];
+    const tests: TestRecord[] = [];
+    const preApprovedInput = {
+      ...input,
+      approvedCommands: ["npm install left-pad --package-lock-only --ignore-scripts"],
+    };
+    const canUseTool = createCanUseTool(preApprovedInput, commandsRun, tests);
+
+    const result = await canUseTool(
+      "Bash",
+      { command: "npm install left-pad --package-lock-only --ignore-scripts" },
+      toolOptions(),
+    );
+
+    expect(result.behavior).toBe("allow");
+    expect(commandsRun[0]).toMatchObject({
+      command: "npm install left-pad --package-lock-only --ignore-scripts",
+      status: "approved",
+    });
+    expect(commandsRun[0]?.reason).toContain("pre-approved exact command");
+  });
+
+  it("allows pre-approved Bash commands with a leading cd into cwd", async () => {
+    const commandsRun: CommandRecord[] = [];
+    const tests: TestRecord[] = [];
+    const command = "npm install left-pad --package-lock-only --ignore-scripts";
+    const preApprovedInput = {
+      ...input,
+      approvedCommands: [command],
+    };
+    const canUseTool = createCanUseTool(preApprovedInput, commandsRun, tests);
+
+    const result = await canUseTool(
+      "Bash",
+      { command: `cd "${input.cwd}" && ${command}` },
+      toolOptions(),
+    );
+
+    expect(result.behavior).toBe("allow");
+    expect(commandsRun[0]).toMatchObject({
+      command: `cd "${input.cwd}" && ${command}`,
+      status: "approved",
+    });
+  });
+
   it("does not request Codex approval for hard-denied Bash commands", async () => {
     const commandsRun: CommandRecord[] = [];
     const tests: TestRecord[] = [];

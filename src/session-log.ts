@@ -65,6 +65,9 @@ async function formatAssignment(
   const contextFiles = input.contextFiles?.length
     ? input.contextFiles.map((file) => `- ${file}`).join("\n")
     : "- None";
+  const approvedCommands = input.approvedCommands?.length
+    ? input.approvedCommands.map((command) => `- \`${command}\``).join("\n")
+    : "- None";
   const contextFileContents = await formatContextFileContents(input.contextFiles || []);
 
   return [
@@ -91,6 +94,10 @@ async function formatAssignment(
     "## Context Files",
     "",
     contextFiles,
+    "",
+    "## Pre-Approved Commands",
+    "",
+    approvedCommands,
     "",
     "## Context File Contents",
     "",

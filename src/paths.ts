@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { DelegateTaskInput, NormalizedDelegateInput } from "./types.js";
@@ -67,10 +68,28 @@ function stripSimpleGlobSuffix(value: string): string {
 }
 
 export function isSubpath(parent: string, candidate: string): boolean {
+  if (isSubpathResolved(parent, candidate)) {
+    return true;
+  }
+
+  const realParent = safeRealpath(parent);
+  const realCandidate = safeRealpath(candidate);
+  return Boolean(realParent && realCandidate && isSubpathResolved(realParent, realCandidate));
+}
+
+function isSubpathResolved(parent: string, candidate: string): boolean {
   const resolvedParent = path.resolve(parent);
   const resolvedCandidate = path.resolve(candidate);
   const relative = path.relative(resolvedParent, resolvedCandidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function safeRealpath(value: string): string | undefined {
+  try {
+    return realpathSync.native(value);
+  } catch {
+    return undefined;
+  }
 }
 
 export function isAllowedFilePath(

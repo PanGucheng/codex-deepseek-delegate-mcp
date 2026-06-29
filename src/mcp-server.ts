@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { CallToolResult, ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import {
   CreateMessageResultSchema,
   ListRootsResultSchema,
@@ -19,7 +19,7 @@ import type {
 import { executeDelegate, executeDelegateTask } from "./service.js";
 
 const SERVER_INSTRUCTIONS =
-  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration and implementer for code changes. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage and continue in the same child session when approved. Codex should review only the final public tool result and changed files, not worker transcripts or local logs.";
+  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration and implementer for code changes. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage when the client supports sampling. If sampling is unavailable, Codex can pass approvedCommands with exact grey-zone commands it has already approved for this task. Codex should review only the final public tool result and changed files, not worker transcripts or local logs.";
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -49,7 +49,10 @@ export function createDelegateServer(
       const result = await executeDelegateTask(input, {
         runner,
         env: await getToolEnv(input, env, extra),
-        commandApprovalHandler: createCodexCommandApprovalHandler(extra),
+        commandApprovalHandler: createCodexCommandApprovalHandler(
+          extra,
+          () => server.server.getClientCapabilities(),
+        ),
       });
       return toToolResult(result);
     },
@@ -67,7 +70,10 @@ export function createDelegateServer(
       const result = await executeDelegate(input, {
         runner,
         env: await getToolEnv(input, env, extra),
-        commandApprovalHandler: createCodexCommandApprovalHandler(extra),
+        commandApprovalHandler: createCodexCommandApprovalHandler(
+          extra,
+          () => server.server.getClientCapabilities(),
+        ),
       });
       return toToolResult(result);
     },
@@ -76,8 +82,20 @@ export function createDelegateServer(
   return server;
 }
 
-function createCodexCommandApprovalHandler(extra: ToolExtra): CommandApprovalHandler {
+function createCodexCommandApprovalHandler(
+  extra: ToolExtra,
+  getClientCapabilities: () => ClientCapabilities | undefined,
+): CommandApprovalHandler {
   return async (request): Promise<CommandApprovalDecision> => {
+    const capabilities = getClientCapabilities();
+    if (!capabilities?.sampling) {
+      return {
+        allowed: false,
+        reason:
+          "Codex MCP client does not advertise sampling/createMessage; interactive command approval is unavailable. Pass approvedCommands to delegate_task for exact upfront approval.",
+      };
+    }
+
     const result = await extra.sendRequest(
       {
         method: "sampling/createMessage",

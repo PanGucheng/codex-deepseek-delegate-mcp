@@ -26,6 +26,8 @@ export class ClaudeRunner implements DelegateRunner {
     let sdkSessionId = input.resumeSdkSessionId;
     const tools = getTools(input);
     const allowedTools = getAutoAllowedTools(input);
+    context.sdkSessionId = sdkSessionId;
+    context.sdkModel = model;
 
     await contextLog(context, "task_session", {
       taskId: input.taskId,
@@ -56,7 +58,12 @@ export class ClaudeRunner implements DelegateRunner {
     });
 
     for await (const message of iterator) {
-      sdkSessionId = getMessageSessionId(message) || sdkSessionId;
+      const messageSessionId = getMessageSessionId(message);
+      sdkSessionId = messageSessionId || sdkSessionId;
+      if (messageSessionId) {
+        context.sdkSessionId = messageSessionId;
+        context.sdkModel = model;
+      }
       await contextLog(context, "sdk_message", summarizeMessage(message));
 
       const observedCommands = extractBashCommands(message);

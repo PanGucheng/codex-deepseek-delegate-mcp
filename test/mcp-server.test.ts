@@ -158,4 +158,37 @@ describe("MCP server", () => {
     await client.close();
     await server.close();
   });
+
+  it("returns a clear denial when the MCP client does not support sampling approval", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-mcp-no-sampling-"));
+    const server = createDelegateServer(new ApprovalProbeRunner(), {
+      DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd,
+    });
+    const client = new Client(
+      { name: "test-client", version: "0.0.0" },
+      { capabilities: {} },
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: "delegate_task",
+      arguments: {
+        subagentType: "implementer",
+        description: "approval probe without sampling",
+        prompt: "request approval",
+        cwd,
+        maxTurns: 1,
+        runVerification: true,
+      },
+    });
+
+    const structured = result.structuredContent as Record<string, unknown>;
+    expect(structured.status).toBe("blocked");
+    expect(structured.summary).toContain("does not advertise sampling/createMessage");
+
+    await client.close();
+    await server.close();
+  });
 });

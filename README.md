@@ -85,6 +85,7 @@ npm run dev
 - `cwd`：目标工作目录。全局安装时应传目标项目的绝对路径；如果未设置 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT`，该 `cwd` 会作为本次任务的 workspace root
 - `allowedPaths`：可选写入范围白名单，路径必须位于 `cwd` 下，支持简单 `/**` 后缀
 - `contextFiles`：可选只读上下文文件，按 workspace root 解析，可用于 monorepo 的 `AGENTS.md`
+- `approvedCommands`：可选；Codex 在派发任务前已经批准的精确灰区 Bash 命令。只做完全字符串匹配，不能覆盖硬危险命令
 - `taskId`：可选；传入时恢复同一个 child session，不传时创建 fresh child task
 - `maxTurns`：执行器最大轮次，默认 `12`
 - `runVerification`：是否要求执行器运行安全的验证命令
@@ -122,7 +123,8 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 
 1. 低危命令和可解析、路径受限的文件写入自动通过。
 2. 硬危险命令本地拒绝，不能被审批覆盖。
-3. 其他灰区命令通过 MCP `sampling/createMessage` 请求当前 Codex 客户端给出 allow/deny 决策；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
+3. 其他灰区命令优先通过 MCP `sampling/createMessage` 请求当前 Codex 客户端给出 allow/deny 决策；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
+4. 如果当前 Codex 客户端不支持 server-to-client sampling，可以在 `delegate_task.approvedCommands` 里传入 Codex 已经明确批准的精确命令作为降级方案。
 
 默认允许：
 
@@ -154,6 +156,16 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 如果灰区命令被 Codex/客户端拒绝，DeepSeek 会收到本次工具调用被拒绝的结果，并可以在同一个任务里选择更安全的替代方案。只有硬危险命令或最终无法继续的权限失败才会让任务返回 `blocked`；详细命令记录保存在本地会话日志。
 
 审批请求只包含单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；MCP 服务本身不会持有或调用 OpenAI API，也不需要 OpenAI key。具体 allow/deny 判断由当前 Codex 客户端通过 MCP sampling 完成。
+
+注意：当前部分 Codex 客户端不会向 MCP server 暴露 `sampling/createMessage`。这种情况下交互式灰区审批会返回明确的 `interactive command approval is unavailable`，而不会弹窗。需要提前允许某条命令时，让 Codex 把完整命令放入 `approvedCommands`，例如：
+
+```json
+{
+  "approvedCommands": [
+    "npm install left-pad --package-lock-only --ignore-scripts"
+  ]
+}
+```
 
 任务单文件和 `contextFiles` 是只读元数据例外：即使设置了 `allowedPaths`，worker 仍可读取它们，但不能编辑。
 

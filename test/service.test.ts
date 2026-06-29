@@ -52,6 +52,18 @@ class FailingSessionRunner implements DelegateRunner {
   }
 }
 
+class ThrowingObservedSessionRunner implements DelegateRunner {
+  lastInput?: NormalizedDelegateInput;
+
+  async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    this.lastInput = input;
+    context.sdkSessionId = "44444444-4444-4444-8444-444444444444";
+    context.sdkModel = "deepseek-test";
+    await fs.writeFile(path.join(input.cwd, "partial-before-throw.txt"), "partial", "utf8");
+    throw new Error("Claude Code returned an error result: Reached maximum number of turns (4)");
+  }
+}
+
 describe("executeDelegate", () => {
   it("keeps the legacy delegate_execute wrapper working", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-service-"));
@@ -168,6 +180,60 @@ describe("executeDelegate", () => {
     expect(resumedRunner.lastInput?.resumed).toBe(true);
     expect(resumedRunner.lastInput?.resumeSdkSessionId).toBe(
       "33333333-3333-4333-8333-333333333333",
+    );
+  });
+
+  it("remembers observed SDK sessions when the runner throws after maxTurns", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-thrown-"));
+    const throwingRunner = new ThrowingObservedSessionRunner();
+    const failed = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "partial write before SDK throws",
+        prompt: "write a partial file then hit max turns",
+        cwd,
+        maxTurns: 4,
+        runVerification: false,
+      },
+      {
+        runner: throwingRunner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(failed.status).toBe("failed");
+    expect(failed.summary).toContain("Reached maximum number of turns");
+    expect(failed.changedFiles).toContain("partial-before-throw.txt");
+
+    const registry = await readTaskSessionRegistry(cwd);
+    expect(registry.tasks[failed.taskId]).toMatchObject({
+      taskId: failed.taskId,
+      sdkSessionId: "44444444-4444-4444-8444-444444444444",
+      subagentType: "implementer",
+      model: "deepseek-test",
+    });
+
+    const resumedRunner = new FileWritingRunner();
+    const resumed = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "resume thrown SDK task",
+        prompt: "finish after max turns",
+        taskId: failed.taskId,
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner: resumedRunner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(resumed.status).toBe("completed");
+    expect(resumedRunner.lastInput?.resumed).toBe(true);
+    expect(resumedRunner.lastInput?.resumeSdkSessionId).toBe(
+      "44444444-4444-4444-8444-444444444444",
     );
   });
 

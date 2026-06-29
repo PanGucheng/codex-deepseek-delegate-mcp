@@ -24,6 +24,7 @@ import {
   type DelegateRunner,
   type DelegateTaskInput,
   type NormalizedDelegateInput,
+  type RunnerContext,
   type SubagentType,
 } from "./types.js";
 
@@ -131,6 +132,13 @@ async function runDelegateTask(
   const commandsRun: DelegateResult["commandsRun"] = [];
   const tests: DelegateResult["tests"] = [];
   const runner = options.runner || createRunnerFromEnv(options.env || process.env);
+  const runnerContext: RunnerContext = {
+    sessionId: log.sessionId,
+    logPath: log.directory,
+    commandsRun,
+    tests,
+    commandApprovalHandler: options.commandApprovalHandler,
+  };
 
   await log.append("start", {
     taskId: input.taskId,
@@ -149,13 +157,7 @@ async function runDelegateTask(
   let result: DelegateResult;
 
   try {
-    result = await runner.run(input, {
-      sessionId: log.sessionId,
-      logPath: log.directory,
-      commandsRun,
-      tests,
-      commandApprovalHandler: options.commandApprovalHandler,
-    });
+    result = await runner.run(input, runnerContext);
   } catch (error) {
     const denied = commandsRun.find((command) => command.status === "denied");
     const status =
@@ -170,6 +172,8 @@ async function runDelegateTask(
       tests,
       sessionId: log.sessionId,
       logPath: log.directory,
+      sdkSessionId: runnerContext.sdkSessionId,
+      sdkModel: runnerContext.sdkModel,
       resumed: input.resumed,
     };
   }
@@ -191,6 +195,8 @@ async function runDelegateTask(
     tests: result.tests,
     sessionId: log.sessionId,
     logPath: log.directory,
+    sdkSessionId: result.sdkSessionId || runnerContext.sdkSessionId,
+    sdkModel: result.sdkModel || runnerContext.sdkModel,
     resumed: input.resumed,
   };
 
