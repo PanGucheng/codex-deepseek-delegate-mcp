@@ -47,7 +47,7 @@ tool_timeout_sec = 1800
 default_tools_approval_mode = "prompt"
 ```
 
-如果要在其他项目里使用这个 MCP，把下面这段加入目标项目的 `.codex/config.toml`，并把路径替换为你克隆本仓库的位置：
+更推荐把它注册为用户级全局 MCP：把下面这段加入 `~/.codex/config.toml`，并把路径替换为你克隆本仓库的位置。`cwd` 可以保持为 MCP 的安装目录；真正的目标项目目录由每次 `delegate_task.cwd` 决定，或在调用方没有传 `cwd` 时由 MCP `roots/list` 自动推断。
 
 ```toml
 [mcp_servers.deepseek_delegate]
@@ -59,6 +59,8 @@ startup_timeout_sec = 20
 tool_timeout_sec = 1800
 default_tools_approval_mode = "prompt"
 ```
+
+全局使用时不要把 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT` 设置为 MCP 安装目录，否则目标项目会被安全策略挡在工作区外。只有当你想把所有任务限制在某个大目录下，例如 `D:/projects`，才把 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT` 加入 `env_vars` 并在启动 Codex 前设置它。
 
 启动 Codex 前先设置 DeepSeek API key：
 
@@ -88,7 +90,7 @@ npm run dev
 - `subagentType`：`repo-scout` 或 `implementer`
 - `description`：简短任务名
 - `prompt`：完整任务说明
-- `cwd`：目标工作目录，必须位于 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT` 或 MCP 服务启动目录内
+- `cwd`：目标工作目录。全局安装时应传目标项目的绝对路径；如果未设置 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT`，该 `cwd` 会作为本次任务的 workspace root
 - `allowedPaths`：可选写入范围白名单，路径必须位于 `cwd` 下，支持简单 `/**` 后缀
 - `contextFiles`：可选只读上下文文件，按 workspace root 解析，可用于 monorepo 的 `AGENTS.md`
 - `taskId`：可选；传入时恢复同一个 child session，不传时创建 fresh child task

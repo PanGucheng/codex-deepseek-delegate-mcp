@@ -16,8 +16,12 @@ export class ConfigError extends Error {
   }
 }
 
-export function getWorkspaceRoot(env: ProcessEnv = process.env): string {
-  return env.DEEPSEEK_DELEGATE_WORKSPACE_ROOT || process.cwd();
+export function getWorkspaceRoot(
+  env: ProcessEnv = process.env,
+  fallbackCwd?: string,
+): string {
+  const configuredRoot = env.DEEPSEEK_DELEGATE_WORKSPACE_ROOT?.trim();
+  return configuredRoot || fallbackCwd || process.cwd();
 }
 
 export function buildDeepSeekEnv(env: ProcessEnv = process.env): DeepSeekEnv {

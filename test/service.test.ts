@@ -95,6 +95,40 @@ describe("executeDelegate", () => {
     });
   });
 
+  it("uses the requested cwd as workspace root when installed globally", async () => {
+    const installDir = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-install-"));
+    const targetProject = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-target-"));
+    const previousCwd = process.cwd();
+    const runner = new FileWritingRunner();
+
+    try {
+      process.chdir(installDir);
+      const result = await executeDelegateTask(
+        {
+          subagentType: "implementer",
+          description: "write from global install",
+          prompt: "write a file",
+          cwd: targetProject,
+          allowedPaths: ["worker-output.txt"],
+          maxTurns: 1,
+          runVerification: false,
+        },
+        {
+          runner,
+          env: {},
+        },
+      );
+
+      expect(result.status).toBe("completed");
+      expect(result.changedFiles).toContain("worker-output.txt");
+      expect(runner.lastInput?.workspaceRoot).toBe(path.resolve(targetProject));
+      await expect(fs.stat(path.join(targetProject, ".delegate", "tasks.json"))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(installDir, ".delegate"))).rejects.toThrow();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
   it("blocks an unknown taskId before invoking the runner", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-service-"));
     const runner = new FileWritingRunner();

@@ -36,7 +36,7 @@ export async function executeDelegateTask(
   options: ExecuteDelegateOptions = {},
 ): Promise<DelegateResult> {
   const env = options.env || process.env;
-  const workspaceRoot = path.resolve(getWorkspaceRoot(env));
+  const workspaceRoot = path.resolve(getWorkspaceRoot(env, getRequestedCwd(rawInput)));
   const parsed = DelegateTaskInputSchema.safeParse(rawInput);
 
   if (!parsed.success) {
@@ -68,7 +68,7 @@ export async function executeDelegate(
   options: ExecuteDelegateOptions = {},
 ): Promise<DelegateResult> {
   const env = options.env || process.env;
-  const workspaceRoot = path.resolve(getWorkspaceRoot(env));
+  const workspaceRoot = path.resolve(getWorkspaceRoot(env, getRequestedCwd(rawInput)));
   const parsed = DelegateInputSchema.safeParse(rawInput);
 
   if (!parsed.success) {
@@ -297,4 +297,13 @@ function uniqueCommands(commands: DelegateResult["commandsRun"]): DelegateResult
 
 function firstLine(value: string): string {
   return value.split(/\r?\n/, 1)[0]?.trim() || "Delegated implementation task";
+}
+
+function getRequestedCwd(rawInput: unknown): string | undefined {
+  if (!rawInput || typeof rawInput !== "object") {
+    return undefined;
+  }
+
+  const cwd = (rawInput as { cwd?: unknown }).cwd;
+  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
