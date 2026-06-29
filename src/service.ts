@@ -20,6 +20,7 @@ import {
   DelegateTaskInputSchema,
   type DelegateInput,
   type DelegateResult,
+  type CommandApprovalHandler,
   type DelegateRunner,
   type DelegateTaskInput,
   type NormalizedDelegateInput,
@@ -29,6 +30,7 @@ import {
 export type ExecuteDelegateOptions = {
   runner?: DelegateRunner;
   env?: NodeJS.ProcessEnv;
+  commandApprovalHandler?: CommandApprovalHandler;
 };
 
 export async function executeDelegateTask(
@@ -152,6 +154,7 @@ async function runDelegateTask(
       logPath: log.directory,
       commandsRun,
       tests,
+      commandApprovalHandler: options.commandApprovalHandler,
     });
   } catch (error) {
     const denied = commandsRun.find((command) => command.status === "denied");

@@ -39,7 +39,7 @@ export type DelegateStatus = "completed" | "blocked" | "failed";
 export type CommandStatus =
   | "allowed"
   | "allowed-write"
-  | "allowed-review"
+  | "approved"
   | "denied"
   | "observed";
 
@@ -56,6 +56,26 @@ export type TestRecord = {
   status: TestStatus;
   output?: string;
 };
+
+export type CommandApprovalRequest = {
+  command: string;
+  cwd: string;
+  allowedPaths?: string[];
+  taskId: string;
+  subagentType: SubagentType;
+  description: string;
+  prompt: string;
+  policyReason: string;
+};
+
+export type CommandApprovalDecision = {
+  allowed: boolean;
+  reason: string;
+};
+
+export type CommandApprovalHandler = (
+  request: CommandApprovalRequest,
+) => Promise<CommandApprovalDecision>;
 
 export type DelegateResult = {
   taskId: string;
@@ -88,6 +108,7 @@ export type RunnerContext = {
   logPath: string;
   commandsRun: CommandRecord[];
   tests: TestRecord[];
+  commandApprovalHandler?: CommandApprovalHandler;
 };
 
 export interface DelegateRunner {

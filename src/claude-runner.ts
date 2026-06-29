@@ -1,5 +1,4 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { createCommandReviewer } from "./command-reviewer.js";
 import { buildDeepSeekEnv, type ProcessEnv } from "./config.js";
 import { createCanUseTool } from "./security.js";
 import type {
@@ -20,7 +19,6 @@ export class ClaudeRunner implements DelegateRunner {
 
   async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
     const deepSeek = buildDeepSeekEnv(this.env);
-    const commandReviewer = createCommandReviewer(this.env);
     const model = deepSeek.env.ANTHROPIC_MODEL || "";
     const prompt = buildWorkerPrompt(input);
     let finalSummary = "";
@@ -48,7 +46,7 @@ export class ClaudeRunner implements DelegateRunner {
         tools,
         allowedTools,
         canUseTool: createCanUseTool(input, context.commandsRun, context.tests, {
-          commandReviewer,
+          commandApprovalHandler: context.commandApprovalHandler,
         }),
         persistSession: true,
         enableFileCheckpointing: true,
@@ -91,7 +89,7 @@ export class ClaudeRunner implements DelegateRunner {
       }
     }
 
-    if (context.commandsRun.some((command) => command.status === "denied")) {
+    if (status !== "completed" && context.commandsRun.some((command) => command.status === "denied")) {
       status = "blocked";
       const denied = context.commandsRun.find((command) => command.status === "denied");
       finalSummary = denied?.reason || finalSummary || "Delegate was blocked by the safety policy.";

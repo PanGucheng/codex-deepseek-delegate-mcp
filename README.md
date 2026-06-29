@@ -41,7 +41,7 @@ model = "gpt-5.5"
 command = "node"
 args = ["dist/index.js"]
 cwd = "."
-env_vars = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_DELEGATE_COMMAND_REVIEWER", "OPENAI_COMMAND_REVIEW_MODEL"]
+env_vars = ["DEEPSEEK_API_KEY"]
 startup_timeout_sec = 20
 tool_timeout_sec = 1800
 default_tools_approval_mode = "prompt"
@@ -54,7 +54,7 @@ default_tools_approval_mode = "prompt"
 command = "node"
 args = ["D:/path/to/codex-deepseek-delegate-mcp/dist/index.js"]
 cwd = "D:/path/to/codex-deepseek-delegate-mcp"
-env_vars = ["DEEPSEEK_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_DELEGATE_COMMAND_REVIEWER", "OPENAI_COMMAND_REVIEW_MODEL"]
+env_vars = ["DEEPSEEK_API_KEY"]
 startup_timeout_sec = 20
 tool_timeout_sec = 1800
 default_tools_approval_mode = "prompt"
@@ -66,14 +66,6 @@ default_tools_approval_mode = "prompt"
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "..."
-```
-
-如果希望灰区 Bash 命令由 GPT 做提权裁决，再设置：
-
-```powershell
-$env:OPENAI_API_KEY = "..."
-$env:DEEPSEEK_DELEGATE_COMMAND_REVIEWER = "openai"
-$env:OPENAI_COMMAND_REVIEW_MODEL = "gpt-5.5"
 ```
 
 开发时如果不想发起真实模型调用，可以启用 mock runner：
@@ -129,8 +121,8 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 对 `implementer` 来说，文件写入是常规能力：`Edit`、`Write`、`MultiEdit` 会在授权范围内自动通过。Bash 工具也可用，策略分为三层：
 
 1. 低危命令和可解析、路径受限的文件写入自动通过。
-2. 硬危险命令本地拒绝，GPT reviewer 不能覆盖。
-3. 其他灰区命令在配置 `DEEPSEEK_DELEGATE_COMMAND_REVIEWER=openai` 后交给 GPT 裁决；未配置 reviewer 时失败关闭。
+2. 硬危险命令本地拒绝，不能被审批覆盖。
+3. 其他灰区命令通过 MCP `elicitation/create` 暂停并请求 Codex/客户端审批；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
 
 默认允许：
 
@@ -140,7 +132,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - 原生文件写入工具：`Edit`、`Write`、`MultiEdit`
 - 可解析的 Bash 写文件命令，例如 `echo ... > file`、`printf ... > file`、`Set-Content -LiteralPath file ...`、`node -e fs.writeFileSync("file", ...)`
 
-需要 GPT reviewer 的灰区示例：
+需要 Codex 审批的灰区示例：
 
 - 新增依赖，例如 `npm install <package>`
 - 运行项目脚本以外的自定义命令
@@ -159,9 +151,9 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - 目标文件无法解析的复杂重定向
 - 未在 allowlist 中的任意命令
 
-如果命令或路径被策略拒绝，工具会返回 `blocked`，并在 `summary` 中给出原因；详细命令记录保存在本地会话日志。
+如果灰区命令被 Codex/客户端拒绝，DeepSeek 会收到本次工具调用被拒绝的结果，并可以在同一个任务里选择更安全的替代方案。只有硬危险命令或最终无法继续的权限失败才会让任务返回 `blocked`；详细命令记录保存在本地会话日志。
 
-GPT reviewer 只接收单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；API key 不会写入日志。
+审批请求只包含单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；不会调用 OpenAI/GPT 或任何额外模型 API。
 
 任务单文件和 `contextFiles` 是只读元数据例外：即使设置了 `allowedPaths`，worker 仍可读取它们，但不能编辑。
 

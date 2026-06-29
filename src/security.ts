@@ -1,6 +1,11 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
-import type { CommandRecord, NormalizedDelegateInput, TestRecord } from "./types.js";
+import type {
+  CommandApprovalHandler,
+  CommandRecord,
+  NormalizedDelegateInput,
+  TestRecord,
+} from "./types.js";
 import { extractToolPaths, isAllowedFilePath, isSubpath } from "./paths.js";
 
 export type CommandDecision = {
@@ -8,7 +13,9 @@ export type CommandDecision = {
   reason: string;
   command?: string;
   writesFiles?: boolean;
-  reviewable?: boolean;
+  requiresApproval?: boolean;
+  approvedByCodex?: boolean;
+  hardDeny?: boolean;
 };
 
 type CommandPolicyContext = {
@@ -16,25 +23,8 @@ type CommandPolicyContext = {
   allowedPaths?: string[];
 };
 
-export type CommandReviewRequest = {
-  command: string;
-  cwd: string;
-  allowedPaths?: string[];
-  task: string;
-  plan?: string;
-  policyReason: string;
-};
-
-export type CommandReviewDecision = {
-  allowed: boolean;
-  reason: string;
-  model?: string;
-};
-
-export type CommandReviewer = (request: CommandReviewRequest) => Promise<CommandReviewDecision>;
-
 type CanUseToolOptions = {
-  commandReviewer?: CommandReviewer;
+  commandApprovalHandler?: CommandApprovalHandler;
 };
 
 const SAFE_READ_ONLY_COMMANDS = [
@@ -92,7 +82,7 @@ export function classifyCommand(
 
   for (const [pattern, reason] of DENIED_PATTERNS) {
     if (pattern.test(trimmed)) {
-      return { allowed: false, reason, command: trimmed };
+      return { allowed: false, reason, command: trimmed, hardDeny: true };
     }
   }
 
@@ -109,6 +99,7 @@ export function classifyCommand(
         allowed: false,
         reason: "file write command requires cwd policy context",
         command: trimmed,
+        hardDeny: true,
       };
     }
 
@@ -122,6 +113,7 @@ export function classifyCommand(
         allowed: false,
         reason: `file write target escapes cwd or allowedPaths: ${deniedPath}`,
         command: trimmed,
+        hardDeny: true,
       };
     }
 
@@ -138,6 +130,7 @@ export function classifyCommand(
       allowed: false,
       reason: "shell redirection is allowed only for simple, parseable file writes",
       command: trimmed,
+      hardDeny: true,
     };
   }
 
@@ -152,7 +145,7 @@ export function classifyCommand(
         allowed: false,
         reason: `command is not in the default allowlist: ${part}`,
         command: trimmed,
-        reviewable: true,
+        requiresApproval: true,
       };
     }
   }
@@ -185,10 +178,10 @@ export function createCanUseTool(
   options: CanUseToolOptions = {},
 ): CanUseTool {
   return async (toolName, toolInput, toolOptions): Promise<PermissionResult> => {
-    const decision = await reviewIfNeeded(
+    const decision = await requestApprovalIfNeeded(
       authorizeTool(toolName, toolInput, input),
       input,
-      options.commandReviewer,
+      options.commandApprovalHandler,
     );
 
     if (decision.command) {
@@ -207,7 +200,9 @@ export function createCanUseTool(
       return {
         behavior: "deny",
         message: decision.reason,
-        interrupt: true,
+        interrupt: Boolean(decision.hardDeny),
+        toolUseID: toolOptions.toolUseID,
+        decisionClassification: decision.requiresApproval ? "user_reject" : undefined,
       };
     }
 
@@ -215,6 +210,7 @@ export function createCanUseTool(
       behavior: "allow",
       updatedInput: toolInput,
       toolUseID: toolOptions.toolUseID,
+      decisionClassification: decision.approvedByCodex ? "user_temporary" : undefined,
     };
   };
 }
@@ -284,55 +280,56 @@ function isReadOnlyMetadataPath(candidate: string, input: NormalizedDelegateInpu
   return Boolean(input.contextFiles?.some((file) => resolved === path.resolve(file)));
 }
 
-async function reviewIfNeeded(
+async function requestApprovalIfNeeded(
   decision: CommandDecision,
   input: NormalizedDelegateInput,
-  commandReviewer?: CommandReviewer,
+  commandApprovalHandler?: CommandApprovalHandler,
 ): Promise<CommandDecision> {
-  if (decision.allowed || !decision.reviewable || !decision.command) {
+  if (decision.allowed || !decision.requiresApproval || !decision.command) {
     return decision;
   }
 
-  if (!commandReviewer) {
+  if (!commandApprovalHandler) {
     return {
       ...decision,
       allowed: false,
-      reason: `${decision.reason}; GPT command reviewer is not configured`,
+      reason: `${decision.reason}; Codex command approval is not available`,
     };
   }
 
   try {
-    const review = await commandReviewer({
+    const approval = await commandApprovalHandler({
       command: decision.command,
       cwd: input.cwd,
       allowedPaths: input.allowedPaths,
-      task: input.prompt,
-      plan: input.description,
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      description: input.description,
+      prompt: input.prompt,
       policyReason: decision.reason,
     });
 
-    if (!review.allowed) {
+    if (!approval.allowed) {
       return {
         ...decision,
         allowed: false,
-        reason: `GPT command reviewer denied: ${review.reason}`,
+        reason: `Codex denied command approval: ${approval.reason}`,
       };
     }
 
-    const modelSuffix = review.model ? ` (${review.model})` : "";
     return {
       ...decision,
       allowed: true,
       writesFiles: false,
-      reason: `GPT command reviewer allowed${modelSuffix}: ${review.reason}`,
-      reviewable: true,
+      reason: `Codex approved command: ${approval.reason}`,
+      approvedByCodex: true,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       ...decision,
       allowed: false,
-      reason: `GPT command reviewer failed closed: ${message}`,
+      reason: `Codex command approval failed: ${message}`,
     };
   }
 }
@@ -346,8 +343,8 @@ function commandStatus(decision: CommandDecision): CommandRecord["status"] {
     return "allowed-write";
   }
 
-  if (decision.reviewable) {
-    return "allowed-review";
+  if (decision.approvedByCodex) {
+    return "approved";
   }
 
   return "allowed";
@@ -372,6 +369,7 @@ function normalizeCommandCwd(
       allowed: false,
       reason: "cd command requires cwd policy context",
       command,
+      hardDeny: true,
     };
   }
 
@@ -384,6 +382,7 @@ function normalizeCommandCwd(
       allowed: false,
       reason: `cd target escapes cwd: ${requestedCwd}`,
       command,
+      hardDeny: true,
     };
   }
 

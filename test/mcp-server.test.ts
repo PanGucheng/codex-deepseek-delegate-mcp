@@ -3,9 +3,41 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import { createDelegateServer } from "../src/mcp-server.js";
 import { MockRunner } from "../src/mock-runner.js";
+import type { DelegateResult, DelegateRunner, NormalizedDelegateInput, RunnerContext } from "../src/types.js";
+
+class ApprovalProbeRunner implements DelegateRunner {
+  async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    const approval = await context.commandApprovalHandler!({
+      command: "npm install left-pad",
+      cwd: input.cwd,
+      allowedPaths: input.allowedPaths,
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      description: input.description,
+      prompt: input.prompt,
+      policyReason: "command is not in the default allowlist: npm install left-pad",
+    });
+
+    return {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      status: approval.allowed ? "completed" : "blocked",
+      summary: approval.reason,
+      changedFiles: [],
+      commandsRun: context.commandsRun,
+      tests: context.tests,
+      sessionId: context.sessionId,
+      logPath: context.logPath,
+      sdkSessionId: "22222222-2222-4222-8222-222222222222",
+      sdkModel: "approval-probe",
+      resumed: input.resumed,
+    };
+  }
+}
 
 describe("MCP server", () => {
   it("lists and calls delegate_execute over an MCP transport", async () => {
@@ -13,7 +45,10 @@ describe("MCP server", () => {
     const server = createDelegateServer(new MockRunner(), {
       DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd,
     });
-    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const client = new Client(
+      { name: "test-client", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -60,6 +95,53 @@ describe("MCP server", () => {
       },
     });
     expect((legacy.structuredContent as Record<string, unknown>).subagentType).toBe("implementer");
+
+    await client.close();
+    await server.close();
+  });
+
+  it("asks the MCP client to approve commands during a delegate_task call", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-mcp-approval-"));
+    const server = createDelegateServer(new ApprovalProbeRunner(), {
+      DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd,
+    });
+    const client = new Client(
+      { name: "test-client", version: "0.0.0" },
+      { capabilities: { elicitation: {} } },
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    let approvalMessage = "";
+
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      approvalMessage = request.params.message;
+      return {
+        action: "accept",
+        content: {
+          approve: true,
+          reason: "approved by Codex test client",
+        },
+      };
+    });
+
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({
+      name: "delegate_task",
+      arguments: {
+        subagentType: "implementer",
+        description: "approval probe",
+        prompt: "request approval",
+        cwd,
+        maxTurns: 1,
+        runVerification: true,
+      },
+    });
+
+    const structured = result.structuredContent as Record<string, unknown>;
+    expect(structured.status).toBe("completed");
+    expect(structured.summary).toBe("approved by Codex test client");
+    expect(approvalMessage).toContain("npm install left-pad");
+    expect(approvalMessage).toContain("outside the deterministic allowlist");
 
     await client.close();
     await server.close();
