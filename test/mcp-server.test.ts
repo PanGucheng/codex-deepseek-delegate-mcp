@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CreateMessageRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import { createDelegateServer } from "../src/mcp-server.js";
 import { MockRunner } from "../src/mock-runner.js";
@@ -47,7 +47,7 @@ describe("MCP server", () => {
     });
     const client = new Client(
       { name: "test-client", version: "0.0.0" },
-      { capabilities: { elicitation: {} } },
+      { capabilities: { sampling: {} } },
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -107,18 +107,30 @@ describe("MCP server", () => {
     });
     const client = new Client(
       { name: "test-client", version: "0.0.0" },
-      { capabilities: { elicitation: {} } },
+      { capabilities: { sampling: {} } },
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     let approvalMessage = "";
 
-    client.setRequestHandler(ElicitRequestSchema, async (request) => {
-      approvalMessage = request.params.message;
+    client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
+      const content = request.params.messages[0]?.content;
+      approvalMessage = Array.isArray(content)
+        ? content
+            .filter((entry) => entry.type === "text")
+            .map((entry) => entry.text)
+            .join("\n")
+        : content?.type === "text"
+          ? content.text
+          : "";
       return {
-        action: "accept",
+        model: "codex-test",
+        role: "assistant",
         content: {
-          approve: true,
-          reason: "approved by Codex test client",
+          type: "text",
+          text: JSON.stringify({
+            allowed: true,
+            reason: "approved by Codex test client",
+          }),
         },
       };
     });

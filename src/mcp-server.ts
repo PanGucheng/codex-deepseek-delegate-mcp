@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
-  ElicitResultSchema,
+  CreateMessageResultSchema,
   ListRootsResultSchema,
   type ServerNotification,
   type ServerRequest,
@@ -19,7 +19,7 @@ import type {
 import { executeDelegate, executeDelegateTask } from "./service.js";
 
 const SERVER_INSTRUCTIONS =
-  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration and implementer for code changes. Approval-required Bash commands are surfaced to Codex via MCP elicitation and continue in the same child session when approved. Codex should review only the final public tool result and changed files, not worker transcripts or local logs.";
+  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration and implementer for code changes. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage and continue in the same child session when approved. Codex should review only the final public tool result and changed files, not worker transcripts or local logs.";
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -80,54 +80,33 @@ function createCodexCommandApprovalHandler(extra: ToolExtra): CommandApprovalHan
   return async (request): Promise<CommandApprovalDecision> => {
     const result = await extra.sendRequest(
       {
-        method: "elicitation/create",
+        method: "sampling/createMessage",
         params: {
-          mode: "form",
-          message: formatCommandApprovalMessage(request),
-          requestedSchema: {
-            type: "object",
-            properties: {
-              approve: {
-                type: "boolean",
-                title: "Approve command",
-                description: "Allow this DeepSeek worker command to run once.",
-                default: false,
-              },
-              reason: {
-                type: "string",
-                title: "Reason",
-                description: "Short approval or denial reason.",
-                maxLength: 500,
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: formatCommandApprovalMessage(request),
               },
             },
-            required: ["approve"],
-          },
-          _meta: {
-            "anthropic/permissionDisplay": {
-              title: "Approve DeepSeek command",
-              displayName: "DeepSeek Delegate",
-              description: request.command,
-            },
+          ],
+          systemPrompt:
+            'You are Codex reviewing a DeepSeek delegate Bash command. Return only compact JSON: {"allowed":boolean,"reason":"short reason"}.',
+          includeContext: "none",
+          temperature: 0,
+          maxTokens: 180,
+          metadata: {
+            source: "deepseek-delegate-command-approval",
           },
         },
       },
-      ElicitResultSchema,
+      CreateMessageResultSchema,
     );
 
-    const approved = result.action === "accept" && result.content?.approve === true;
-    const reason =
-      typeof result.content?.reason === "string" && result.content.reason.trim()
-        ? result.content.reason.trim()
-        : result.action === "accept"
-          ? approved
-            ? "approved by Codex"
-            : "approval form did not set approve=true"
-          : `elicitation ${result.action}`;
-
-    return {
-      allowed: approved,
-      reason,
-    };
+    return parseCodexApprovalText(
+      result.content.type === "text" ? result.content.text : "",
+    );
   };
 }
 
@@ -138,6 +117,8 @@ function formatCommandApprovalMessage(request: CommandApprovalRequest): string {
 
   return [
     "DeepSeek worker is requesting permission to run a Bash command that is outside the deterministic allowlist.",
+    "Decide whether Codex should allow this single command to run now. Respond with JSON only, for example:",
+    '{"allowed":false,"reason":"command is not scoped to the task"}',
     "",
     `Task ID: ${request.taskId}`,
     `Subagent: ${request.subagentType}`,
@@ -156,6 +137,57 @@ function formatCommandApprovalMessage(request: CommandApprovalRequest): string {
     "",
     "Approve only if this command is necessary for the current task and scoped to the target project. Deny destructive commands, global config changes, credential access, git history rewrites, and download-and-execute flows.",
   ].join("\n");
+}
+
+function parseCodexApprovalText(text: string): CommandApprovalDecision {
+  const fallback: CommandApprovalDecision = {
+    allowed: false,
+    reason: "Codex sampling response did not include valid approval JSON",
+  };
+
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+
+  const jsonText = extractJsonObject(trimmed);
+  if (!jsonText) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      allowed?: unknown;
+      approve?: unknown;
+      reason?: unknown;
+    };
+    const allowed =
+      typeof parsed.allowed === "boolean"
+        ? parsed.allowed
+        : typeof parsed.approve === "boolean"
+          ? parsed.approve
+          : undefined;
+    if (allowed === undefined) {
+      return fallback;
+    }
+    const reason =
+      typeof parsed.reason === "string" && parsed.reason.trim()
+        ? parsed.reason.trim()
+        : allowed
+          ? "approved by Codex"
+          : "denied by Codex";
+    return { allowed, reason };
+  } catch {
+    return fallback;
+  }
+}
+
+function extractJsonObject(text: string): string | undefined {
+  if (text.startsWith("{") && text.endsWith("}")) {
+    return text;
+  }
+  const match = text.match(/\{[\s\S]*\}/);
+  return match?.[0];
 }
 
 async function getToolEnv(

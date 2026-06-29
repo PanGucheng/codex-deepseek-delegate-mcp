@@ -29,6 +29,29 @@ class FileWritingRunner implements DelegateRunner {
   }
 }
 
+class FailingSessionRunner implements DelegateRunner {
+  lastInput?: NormalizedDelegateInput;
+
+  async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    this.lastInput = input;
+    await fs.writeFile(path.join(input.cwd, "partial-output.txt"), "partial", "utf8");
+    return {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      status: "failed",
+      summary: "stopped before final answer",
+      changedFiles: [],
+      commandsRun: context.commandsRun,
+      tests: context.tests,
+      sessionId: context.sessionId,
+      logPath: context.logPath,
+      sdkSessionId: "33333333-3333-4333-8333-333333333333",
+      sdkModel: "deepseek-test",
+      resumed: input.resumed,
+    };
+  }
+}
+
 describe("executeDelegate", () => {
   it("keeps the legacy delegate_execute wrapper working", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-service-"));
@@ -93,6 +116,59 @@ describe("executeDelegate", () => {
       subagentType: "implementer",
       model: "deepseek-test",
     });
+  });
+
+  it("remembers failed child sessions when the SDK session id is available", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-failed-"));
+    const failingRunner = new FailingSessionRunner();
+    const failed = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "partial write before turn limit",
+        prompt: "write a partial file",
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner: failingRunner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(failed.status).toBe("failed");
+    expect(failed.changedFiles).toContain("partial-output.txt");
+
+    const registry = await readTaskSessionRegistry(cwd);
+    expect(registry.tasks[failed.taskId]).toMatchObject({
+      taskId: failed.taskId,
+      sdkSessionId: "33333333-3333-4333-8333-333333333333",
+      subagentType: "implementer",
+      model: "deepseek-test",
+    });
+
+    const resumedRunner = new FileWritingRunner();
+    const resumed = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "continue partial task",
+        prompt: "finish the partial file task",
+        taskId: failed.taskId,
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner: resumedRunner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(resumed.status).toBe("completed");
+    expect(resumedRunner.lastInput?.resumed).toBe(true);
+    expect(resumedRunner.lastInput?.resumeSdkSessionId).toBe(
+      "33333333-3333-4333-8333-333333333333",
+    );
   });
 
   it("uses the requested cwd as workspace root when installed globally", async () => {

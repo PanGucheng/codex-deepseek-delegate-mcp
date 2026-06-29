@@ -194,7 +194,7 @@ async function runDelegateTask(
     resumed: input.resumed,
   };
 
-  if (finalResult.status === "completed" && finalResult.sdkSessionId && finalResult.sdkModel) {
+  if (finalResult.sdkSessionId && finalResult.sdkModel) {
     await rememberTaskSession({
       cwd: input.cwd,
       taskId: input.taskId,

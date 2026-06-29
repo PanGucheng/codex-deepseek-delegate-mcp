@@ -122,7 +122,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 
 1. 低危命令和可解析、路径受限的文件写入自动通过。
 2. 硬危险命令本地拒绝，不能被审批覆盖。
-3. 其他灰区命令通过 MCP `elicitation/create` 暂停并请求 Codex/客户端审批；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
+3. 其他灰区命令通过 MCP `sampling/createMessage` 请求当前 Codex 客户端给出 allow/deny 决策；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
 
 默认允许：
 
@@ -153,7 +153,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 
 如果灰区命令被 Codex/客户端拒绝，DeepSeek 会收到本次工具调用被拒绝的结果，并可以在同一个任务里选择更安全的替代方案。只有硬危险命令或最终无法继续的权限失败才会让任务返回 `blocked`；详细命令记录保存在本地会话日志。
 
-审批请求只包含单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；不会调用 OpenAI/GPT 或任何额外模型 API。
+审批请求只包含单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；MCP 服务本身不会持有或调用 OpenAI API，也不需要 OpenAI key。具体 allow/deny 判断由当前 Codex 客户端通过 MCP sampling 完成。
 
 任务单文件和 `contextFiles` 是只读元数据例外：即使设置了 `allowedPaths`，worker 仍可读取它们，但不能编辑。
 
