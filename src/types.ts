@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const DEFAULT_MAX_TURNS = 100;
+export const MAX_MAX_TURNS = 1000;
+
 export const SubagentTypeSchema = z.enum(["repo-scout", "implementer", "reviewer-helper"]);
 export const BashPolicySchema = z.enum(["strict", "balanced", "trusted"]);
 
@@ -18,7 +21,7 @@ export const DelegateTaskInputSchema = z
     fallbackPolicy: z.enum(["ask-codex"]).optional(),
     bashPolicy: BashPolicySchema.optional(),
     taskId: z.string().min(1).max(160).optional(),
-    maxTurns: z.number().int().min(1).max(100).optional(),
+    maxTurns: z.number().int().min(1).max(MAX_MAX_TURNS).optional(),
     runVerification: z.boolean().default(true),
   })
   .strict();
@@ -29,7 +32,7 @@ export const DelegateInputSchema = z
     plan: z.string().optional(),
     cwd: z.string().optional(),
     allowedFiles: z.array(z.string().min(1)).optional(),
-    maxTurns: z.number().int().min(1).max(100).optional(),
+    maxTurns: z.number().int().min(1).max(MAX_MAX_TURNS).optional(),
     runVerification: z.boolean().default(true),
     conversationMode: z.enum(["reuse", "fresh", "ephemeral"]).default("reuse"),
     conversationKey: z.string().min(1).max(160).optional(),

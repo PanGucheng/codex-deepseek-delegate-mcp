@@ -127,7 +127,7 @@ describe("executeDelegate", () => {
     expect(result.taskId).toMatch(/^task_/);
     expect(runner.lastInput?.resumed).toBe(false);
     expect(runner.lastInput?.allowedPaths?.[0]).toBe(path.join(cwd, "src"));
-    expect(runner.lastInput?.maxTurns).toBeUndefined();
+    expect(runner.lastInput?.maxTurns).toBe(100);
     expect(runner.lastInput?.bashPolicy).toBe("balanced");
 
     const registry = await readTaskSessionRegistry(cwd);
@@ -139,7 +139,7 @@ describe("executeDelegate", () => {
     });
 
     const assignment = await fs.readFile(runner.lastInput!.assignmentFilePath!, "utf8");
-    expect(assignment).toContain("maxTurns: unlimited");
+    expect(assignment).toContain("maxTurns: 100");
     expect(assignment).toContain("bashPolicy: balanced");
     expect(assignment).toContain("## Codex Execution Plan");
     expect(assignment).toContain("Create worker-output.txt");

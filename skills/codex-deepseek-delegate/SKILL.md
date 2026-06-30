@@ -100,7 +100,7 @@ Review after implementation:
 }
 ```
 
-Omit `maxTurns` for normal work. Pass it only when intentionally limiting a smoke test or budget.
+Omit `maxTurns` for normal work; the MCP will set `maxTurns` to 100 to avoid Claude Code's lower internal default. Pass a smaller value only when intentionally limiting a smoke test or budget.
 
 ## approvedCommands And Prefixes
 

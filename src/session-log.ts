@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { DEFAULT_MAX_TURNS } from "./types.js";
 import type { DelegateResult, NormalizedDelegateInput } from "./types.js";
 
 export type SessionLog = {
@@ -88,7 +89,7 @@ async function formatAssignment(
     `Description: ${input.description}`,
     `cwd: ${input.cwd}`,
     `workspaceRoot: ${input.workspaceRoot}`,
-    `maxTurns: ${input.maxTurns ?? "unlimited"}`,
+    `maxTurns: ${input.maxTurns ?? DEFAULT_MAX_TURNS}`,
     `runVerification: ${input.runVerification ? "true" : "false"}`,
     `bashPolicy: ${input.bashPolicy || "strict"}`,
     `fallbackPolicy: ${input.fallbackPolicy}`,

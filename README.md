@@ -114,7 +114,7 @@ Use $codex-deepseek-delegate to delegate this implementation through deepseek_de
 - `acceptanceCriteria`：可选；Codex 给出的验收条件
 - `bashPolicy`：可选；`strict`、`balanced` 或 `trusted`。`implementer` 默认 `balanced`，`repo-scout` 和 `reviewer-helper` 默认 `strict`
 - `taskId`：可选；传入时恢复同一个 child session，不传时创建 fresh child task
-- `maxTurns`：可选；执行器最大轮次。不传时默认不设置上限
+- `maxTurns`：可选；执行器最大轮次。不传时 MCP 会显式设置为 `100`，避免落到 Claude Code 较低的内部默认值
 - `runVerification`：是否要求执行器运行安全的验证命令
 
 调用后，服务会把完整任务写成本地任务单：

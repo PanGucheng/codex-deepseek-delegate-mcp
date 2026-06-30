@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { DEFAULT_MAX_TURNS } from "./types.js";
 import type { BashPolicy, DelegateTaskInput, NormalizedDelegateInput, SubagentType } from "./types.js";
 import { DelegateError } from "./types.js";
 
@@ -61,6 +62,7 @@ export function normalizeInput(
     contextFiles,
     fallbackPolicy: input.fallbackPolicy || "ask-codex",
     bashPolicy: input.bashPolicy || defaultBashPolicy(input.subagentType),
+    maxTurns: input.maxTurns ?? DEFAULT_MAX_TURNS,
     resumed: Boolean(input.resumed),
   };
 }
