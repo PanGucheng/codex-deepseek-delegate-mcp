@@ -12,6 +12,7 @@
 - 会话日志：写入 `.delegate/sessions/<sessionId>/request.json`、`assignment.md`、`events.jsonl` 和 `result.json`
 - 任务 registry：写入 `.delegate/tasks.json`，用 `taskId` 恢复同一个 DeepSeek child session
 - 安全策略：限制 `cwd`、支持 `allowedPaths`、按 subagent 绑定权限、日志不会记录 API key
+- Codex skill：`skills/codex-deepseek-delegate`，让新对话自动掌握推荐委托流程
 
 ## 安装与构建
 
@@ -73,6 +74,28 @@ $env:DEEPSEEK_API_KEY = "..."
 ```powershell
 $env:DEEPSEEK_DELEGATE_MOCK = "1"
 npm run dev
+```
+
+## Codex Skill
+
+仓库内置一个可分发 skill：
+
+```text
+skills/codex-deepseek-delegate/
+```
+
+它会指导 Codex 何时使用 `delegate_task`，如何选择 `repo-scout`、`implementer`、`reviewer-helper`，以及如何使用 `approvedCommands`、`delegate_status` 和 `delegate_history`。
+
+安装到本机 Codex：
+
+```powershell
+Copy-Item -Recurse -Force .\skills\codex-deepseek-delegate $env:USERPROFILE\.codex\skills\codex-deepseek-delegate
+```
+
+之后新对话可以显式触发：
+
+```text
+Use $codex-deepseek-delegate to delegate this implementation through deepseek_delegate.
 ```
 
 ## MCP 工具输入
