@@ -127,18 +127,26 @@ describe("tool policy", () => {
 
   it("allows reading assignment and context files even when allowedPaths is scoped", () => {
     const assignmentFilePath = path.join(root, ".delegate", "sessions", "session", "assignment.md");
+    const handoffFilePath = path.join(root, ".delegate", "sessions", "session", "handoff.md");
+    const handoffDirectory = path.join(root, ".delegate", "sessions", "session", "handoff");
     const contextFilePath = path.join(root, "AGENTS.md");
     const scoped = {
       ...input,
       allowedPaths: [path.join(root, "src")],
       contextFiles: [contextFilePath],
       assignmentFilePath,
+      handoffFilePath,
+      handoffDirectory,
     };
 
     expect(authorizeTool("Read", { file_path: assignmentFilePath }, scoped).allowed).toBe(true);
     expect(authorizeTool("Read", { file_path: contextFilePath }, scoped).allowed).toBe(true);
+    expect(authorizeTool("Read", { file_path: handoffFilePath }, scoped).allowed).toBe(true);
+    expect(authorizeTool("Read", { file_path: path.join(handoffDirectory, "test.txt") }, scoped).allowed).toBe(true);
     expect(authorizeTool("Write", { file_path: assignmentFilePath }, scoped).allowed).toBe(false);
     expect(authorizeTool("Write", { file_path: contextFilePath }, scoped).allowed).toBe(false);
+    expect(authorizeTool("Write", { file_path: handoffFilePath }, scoped).allowed).toBe(true);
+    expect(authorizeTool("Write", { file_path: path.join(handoffDirectory, "test.txt") }, scoped).allowed).toBe(true);
   });
 
   it("keeps repo-scout read-only", () => {

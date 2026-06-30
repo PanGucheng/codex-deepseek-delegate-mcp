@@ -33,7 +33,7 @@ Use `delegate_task` for:
 - Independent factual repo exploration before planning
 - Long-running fixture or regression work
 - Continuing an existing DeepSeek child session with `taskId`
-- Read-only review of an implementer diff
+- Read-only review of an implementer diff only when a second model pass is worth the extra cost
 
 Choose `subagentType`:
 
@@ -154,6 +154,8 @@ Use `delegate_history` to list recent public summaries:
 
 Treat these tools as the normal way to inspect prior delegate work. They intentionally omit `commandsRun`, `sessionId`, `logPath`, `sdkSessionId`, and worker transcript.
 
+Implementer tasks may return `handoffFile` and `evidenceFiles`. These are curated files written by DeepSeek for Codex, not full transcripts. Prefer reading them when verification details, selected output excerpts, plan deviations, risks, or unverified items matter.
+
 ## Failure Handling
 
 Use this table before starting a fresh task:
@@ -173,10 +175,11 @@ Use this table before starting a fresh task:
 After any implementer task:
 
 1. Read the public tool result.
-2. Inspect the actual git diff or changed files with normal Codex tools.
-3. Optionally run `reviewer-helper` for large or risky diffs.
-4. Decide whether to accept, ask implementer to continue with the same `taskId`, or make a small direct fix yourself.
-5. Report changed files, tests, and residual risks to the user.
+2. Read `handoffFile` or selected `evidenceFiles` when the public summary is not enough to judge tests, risks, or plan deviations.
+3. Inspect the actual git diff or changed files with normal Codex tools.
+4. Do not run `reviewer-helper` by default. Use it only for large, risky, security-sensitive, confusing, or user-requested reviews where a second model pass is worth the extra cost.
+5. Decide whether to accept, ask implementer to continue with the same `taskId`, or make a small direct fix yourself.
+6. Report changed files, tests, and residual risks to the user.
 
 Never treat the DeepSeek worker as the final authority. Codex owns final review.
 
@@ -185,8 +188,10 @@ Never treat the DeepSeek worker as the final authority. Codex owns final review.
 Before final response, verify:
 
 - Public result was read from the MCP tool response, not worker transcript.
+- Handoff files were read only when they helped judge verification, risks, or plan deviations.
 - Changed files or git diff were inspected directly by Codex.
 - Tests or verification commands were run or clearly reported as not run.
 - `delegate_status` or `delegate_history` was used when continuity or prior task state matters.
 - Codex authored the `executionPlan` for implementer tasks.
+- `reviewer-helper` was not used unless the diff warranted a second model pass.
 - Any `approvedCommands` or `approvedCommandPrefixes` entry was necessary, narrow, and scoped by `allowedPaths`.

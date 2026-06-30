@@ -17,6 +17,20 @@ class FileWritingRunner implements DelegateRunner {
   async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
     this.lastInput = input;
     await fs.writeFile(path.join(input.cwd, "worker-output.txt"), "done", "utf8");
+    if (input.handoffFilePath && input.handoffDirectory) {
+      await fs.writeFile(
+        input.handoffFilePath,
+        [
+          "# Codex Handoff",
+          "",
+          "Summary: wrote worker-output.txt.",
+          "Verification: mock runner did not run commands.",
+          "Risks: none in fixture.",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(path.join(input.handoffDirectory, "verification.txt"), "mock evidence", "utf8");
+    }
     return {
       taskId: input.taskId,
       subagentType: input.subagentType,
@@ -27,6 +41,12 @@ class FileWritingRunner implements DelegateRunner {
       tests: context.tests,
       sessionId: context.sessionId,
       logPath: context.logPath,
+      handoffFile: input.handoffFilePath
+        ? path.relative(input.cwd, input.handoffFilePath).split(path.sep).join("/")
+        : undefined,
+      evidenceFiles: input.handoffDirectory
+        ? [path.relative(input.cwd, path.join(input.handoffDirectory, "verification.txt")).split(path.sep).join("/")]
+        : [],
       sdkSessionId: "11111111-1111-4111-8111-111111111111",
       sdkModel: "deepseek-test",
       resumed: input.resumed,
@@ -125,6 +145,10 @@ describe("executeDelegate", () => {
 
     expect(result.status).toBe("completed");
     expect(result.taskId).toMatch(/^task_/);
+    expect(result.handoffFile).toMatch(/^\.delegate\/sessions\/.+\/handoff\.md$/);
+    expect(result.evidenceFiles).toEqual([
+      expect.stringMatching(/^\.delegate\/sessions\/.+\/handoff\/verification\.txt$/),
+    ]);
     expect(runner.lastInput?.resumed).toBe(false);
     expect(runner.lastInput?.allowedPaths?.[0]).toBe(path.join(cwd, "src"));
     expect(runner.lastInput?.maxTurns).toBe(100);
@@ -140,6 +164,9 @@ describe("executeDelegate", () => {
 
     const assignment = await fs.readFile(runner.lastInput!.assignmentFilePath!, "utf8");
     expect(assignment).toContain("maxTurns: 100");
+    expect(assignment).toContain("handoffFile:");
+    expect(assignment).toContain("handoffDirectory:");
+    expect(assignment).toContain("curated Codex handoff");
     expect(assignment).toContain("bashPolicy: balanced");
     expect(assignment).toContain("## Codex Execution Plan");
     expect(assignment).toContain("Create worker-output.txt");
@@ -147,6 +174,7 @@ describe("executeDelegate", () => {
     expect(assignment).toContain("worker-output.txt exists");
     expect(assignment).toContain("## Pre-Approved Command Prefixes");
     expect(assignment).toContain("npm run build");
+    await expect(fs.readFile(path.join(cwd, result.handoffFile!), "utf8")).resolves.toContain("Codex Handoff");
   });
 
   it("returns public delegate status and history without private fields", async () => {
@@ -184,6 +212,7 @@ describe("executeDelegate", () => {
       sdkSessionKnown: true,
     });
     expect(status).toHaveProperty("lastResult");
+    expect(JSON.stringify(status)).toContain("handoff.md");
     expect(status).not.toHaveProperty("sdkSessionId");
     expect(status).not.toHaveProperty("logPath");
     expect(status).not.toHaveProperty("commandsRun");
@@ -209,6 +238,7 @@ describe("executeDelegate", () => {
     expect(JSON.stringify(history)).not.toContain("commandsRun");
     expect(JSON.stringify(history)).not.toContain("sdkSessionId");
     expect(JSON.stringify(history)).not.toContain("logPath");
+    expect(JSON.stringify(history)).toContain("handoff.md");
 
     const missing = await getDelegateStatus(
       {

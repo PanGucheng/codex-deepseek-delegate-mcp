@@ -142,8 +142,10 @@ DeepSeek worker 收到的 prompt 只包含任务单路径、`cwd`、subagent 类
 - `summary`：执行摘要
 - `changedFiles`：检测到变化的文件
 - `tests`：识别到的测试/验证命令
+- `handoffFile`：DeepSeek 为 Codex 整理的精选交接文件，通常为 `.delegate/sessions/<sessionId>/handoff.md`
+- `evidenceFiles`：DeepSeek 选择移交的补充证据文件，例如精简测试输出片段
 
-MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessionId` 或 `logPath`。这些信息只写入本地 `.delegate/sessions/<sessionId>/`，用于人工排查，不让 Codex 自动读取 worker 中间过程。
+MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessionId` 或 `logPath`。这些信息只写入本地 `.delegate/sessions/<sessionId>/`，用于人工排查，不让 Codex 自动读取 worker 中间过程。DeepSeek 如果认为某些测试输出、失败片段或风险说明值得交给 Codex，应写入 `handoffFile` 或 `evidenceFiles`；Codex 按需读取这些精选文件，而不是读取完整 transcript。
 
 ## 安全策略
 
@@ -205,7 +207,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 }
 ```
 
-任务单文件和 `contextFiles` 是只读元数据例外：即使设置了 `allowedPaths`，worker 仍可读取它们，但不能编辑。
+任务单文件和 `contextFiles` 是只读元数据例外：即使设置了 `allowedPaths`，worker 仍可读取它们，但不能编辑。`handoffFile` 和 `handoff/` 目录是交接元数据例外：implementer 可写入这些文件，用来移交精选测试证据、风险和未验证项；它们不属于业务代码写入范围。
 
 ## Codex 侧预提示词
 
@@ -216,10 +218,11 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - Codex 是 planner：调用 `implementer` 前应先制定 `executionPlan` 和 `acceptanceCriteria`
 - `repo-scout` 只做事实调研，例如路径、符号、测试入口；不是实现前的必经步骤
 - `implementer` 只执行 Codex-authored plan；如果计划不成立，应返回 `blocked`/决策请求，而不是自行换方案
-- 对大 diff、多文件或高风险变更，可在 implementer 完成后用 `reviewer-helper` 做只读审查
+- `implementer` 应写 curated handoff，交代关键验证结果、选出的证据文件、风险和未验证项
+- 默认不要在 implementer 完成后调用 `reviewer-helper`；只有大 diff、高风险、安全敏感、结果含糊或用户明确要求第二视角时才用
 - 在工具输入里传入完整任务包
 - 服务端会把任务写入本地 `assignment.md`
-- Codex 只审查最终工具结果和文件变化，不读取 worker 的中间执行 transcript
+- Codex 只审查最终工具结果、handoff 文件和文件变化，不读取 worker 的中间执行 transcript
 - 需要继续同一子任务返工时传回上次 `taskId`
 - 需要查看任务历史时使用 `delegate_status` / `delegate_history`，不要直接读取本地 worker 日志
 

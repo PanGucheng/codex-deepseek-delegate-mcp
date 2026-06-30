@@ -85,6 +85,7 @@ export type TestRecord = {
   command: string;
   status: TestStatus;
   output?: string;
+  evidenceFile?: string;
 };
 
 export type CommandApprovalRequest = {
@@ -117,6 +118,8 @@ export type DelegateResult = {
   tests: TestRecord[];
   sessionId: string;
   logPath: string;
+  handoffFile?: string;
+  evidenceFiles?: string[];
   sdkSessionId?: string;
   sdkModel?: string;
   resumed: boolean;
@@ -129,6 +132,8 @@ export type NormalizedDelegateInput = Omit<DelegateTaskInput, "cwd" | "allowedPa
   allowedPaths?: string[];
   contextFiles?: string[];
   assignmentFilePath?: string;
+  handoffFilePath?: string;
+  handoffDirectory?: string;
   resumeSdkSessionId?: string;
   resumed: boolean;
 };

@@ -144,7 +144,7 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     `cwd: ${input.cwd}`,
     input.subagentType === "reviewer-helper"
       ? "Finish with a compact report containing Findings, Tests Observed, Risks, and Suggested Follow-up."
-      : "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
+      : "Before finishing, write the curated Codex handoff requested in the assignment. Then finish with a compact report containing Summary, Changed files, Commands run, Tests, Risks, and the handoff file path.",
   ].join("\n");
 }
 

@@ -8,6 +8,8 @@ export type SessionLog = {
   directory: string;
   eventsPath: string;
   assignmentPath: string;
+  handoffPath: string;
+  handoffDirectory: string;
   append(event: string, payload: unknown): Promise<void>;
   writeAssignment(input: NormalizedDelegateInput): Promise<string>;
   writeResult(result: DelegateResult): Promise<void>;
@@ -18,8 +20,11 @@ export async function createSessionLog(cwd: string, request: unknown): Promise<S
   const directory = path.join(cwd, ".delegate", "sessions", sessionId);
   const eventsPath = path.join(directory, "events.jsonl");
   const assignmentPath = path.join(directory, "assignment.md");
+  const handoffPath = path.join(directory, "handoff.md");
+  const handoffDirectory = path.join(directory, "handoff");
 
   await fs.mkdir(directory, { recursive: true });
+  await fs.mkdir(handoffDirectory, { recursive: true });
   await fs.writeFile(
     path.join(directory, "request.json"),
     `${JSON.stringify(sanitizeRequest(request), null, 2)}\n`,
@@ -31,6 +36,8 @@ export async function createSessionLog(cwd: string, request: unknown): Promise<S
     directory,
     eventsPath,
     assignmentPath,
+    handoffPath,
+    handoffDirectory,
     async append(event, payload) {
       await fs.appendFile(
         eventsPath,
@@ -79,6 +86,8 @@ async function formatAssignment(
     ? input.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")
     : "- None provided";
   const contextFileContents = await formatContextFileContents(input.contextFiles || []);
+  const handoffFile = input.handoffFilePath || path.join(input.cwd, ".delegate", "sessions", sessionId, "handoff.md");
+  const handoffDirectory = input.handoffDirectory || path.join(input.cwd, ".delegate", "sessions", sessionId, "handoff");
 
   return [
     "# DeepSeek Delegate Assignment",
@@ -93,6 +102,8 @@ async function formatAssignment(
     `runVerification: ${input.runVerification ? "true" : "false"}`,
     `bashPolicy: ${input.bashPolicy || "strict"}`,
     `fallbackPolicy: ${input.fallbackPolicy}`,
+    `handoffFile: ${handoffFile}`,
+    `handoffDirectory: ${handoffDirectory}`,
     `resumed: ${input.resumed ? "true" : "false"}`,
     "",
     "## Prompt",
@@ -139,6 +150,8 @@ async function formatAssignment(
     "- Do not call other subagents or task tools. Subagent depth is fixed at 1.",
     "- Exact Pre-Approved Commands and Pre-Approved Command Prefixes may be used only for this task. They do not override hard-dangerous command denials.",
     "- Bash policy modes: strict allows known read-only and verification commands; balanced allows normal project-local build, test, lint, typecheck, script, and generation commands; trusted allows most project-local commands except hard-denied operations.",
+    "- For implementer tasks, write a curated Codex handoff to handoffFile before finishing. Include only the evidence Codex needs: summary, plan deviations, verification commands worth reporting, pass/fail status, short output excerpts, risks, and unverified items.",
+    "- Do not copy the full worker transcript or all command output into the handoff. Put larger selected evidence in files under handoffDirectory and reference those files from handoffFile.",
     input.subagentType === "reviewer-helper"
       ? "- You are read-only: do not edit files, do not install dependencies, and do not use Bash to write files."
       : "",

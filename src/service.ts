@@ -231,6 +231,11 @@ async function runDelegateTask(
   options: ExecuteDelegateOptions,
 ): Promise<DelegateResult> {
   const log = await createSessionLog(input.cwd, request);
+  input = {
+    ...input,
+    handoffFilePath: log.handoffPath,
+    handoffDirectory: log.handoffDirectory,
+  };
   const assignmentFilePath = await log.writeAssignment(input);
   input = {
     ...input,
@@ -285,6 +290,8 @@ async function runDelegateTask(
       tests,
       sessionId: log.sessionId,
       logPath: log.directory,
+      handoffFile: toRelativeDelegatePath(input.cwd, log.handoffPath),
+      evidenceFiles: [],
       sdkSessionId: runnerContext.sdkSessionId,
       sdkModel: runnerContext.sdkModel,
       resumed: input.resumed,
@@ -298,6 +305,10 @@ async function runDelegateTask(
     ...result.changedFiles,
     ...(gitChangedFiles ?? snapshotChangedFiles),
   ]);
+  const evidenceFiles = await listEvidenceFiles(input.cwd, log.handoffDirectory);
+  const handoffFile = (await fileExists(log.handoffPath))
+    ? toRelativeDelegatePath(input.cwd, log.handoffPath)
+    : undefined;
 
   const finalResult: DelegateResult = {
     ...result,
@@ -308,6 +319,8 @@ async function runDelegateTask(
     tests: result.tests,
     sessionId: log.sessionId,
     logPath: log.directory,
+    handoffFile,
+    evidenceFiles,
     sdkSessionId: result.sdkSessionId || runnerContext.sdkSessionId,
     sdkModel: result.sdkModel || runnerContext.sdkModel,
     resumed: input.resumed,
@@ -334,6 +347,8 @@ async function runDelegateTask(
     commandsRun: finalResult.commandsRun,
     tests: finalResult.tests,
     sdkSessionId: finalResult.sdkSessionId,
+    handoffFile: finalResult.handoffFile,
+    evidenceFiles: finalResult.evidenceFiles,
   });
 
   return finalResult;
@@ -382,6 +397,8 @@ async function createBlockedResult(
     tests: [],
     sessionId: log.sessionId,
     logPath: log.directory,
+    handoffFile: undefined,
+    evidenceFiles: [],
     resumed: false,
   };
   await log.writeResult(result);
@@ -469,6 +486,8 @@ function toPublicHistoryItem(record: TaskSessionRecord, result: DelegateResult |
           summary: result.summary,
           changedFiles: result.changedFiles,
           tests: result.tests.map(({ command, status }) => ({ command, status })),
+          handoffFile: result.handoffFile,
+          evidenceFiles: result.evidenceFiles,
         }
       : {}),
   };
@@ -480,6 +499,33 @@ function toPublicLastResult(result: DelegateResult) {
     summary: result.summary,
     changedFiles: result.changedFiles,
     tests: result.tests.map(({ command, status }) => ({ command, status })),
+    handoffFile: result.handoffFile,
+    evidenceFiles: result.evidenceFiles,
     resumed: result.resumed,
   };
+}
+
+async function listEvidenceFiles(cwd: string, handoffDirectory: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(handoffDirectory, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => toRelativeDelegatePath(cwd, path.join(handoffDirectory, entry.name)))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+function toRelativeDelegatePath(cwd: string, filePath: string): string {
+  return path.relative(cwd, filePath).split(path.sep).join("/");
 }

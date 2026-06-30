@@ -305,6 +305,10 @@ export function authorizeTool(
       continue;
     }
 
+    if (isWriteTool(toolName) && isWritableHandoffPath(candidate, input)) {
+      continue;
+    }
+
     const allowed = isWriteTool(toolName)
       ? isAllowedFilePath(candidate, input.cwd, input.allowedPaths)
       : isAllowedFilePath(candidate, input.cwd);
@@ -387,7 +391,24 @@ function isReadOnlyMetadataPath(candidate: string, input: NormalizedDelegateInpu
     return true;
   }
 
+  if (input.handoffFilePath && resolved === path.resolve(input.handoffFilePath)) {
+    return true;
+  }
+
+  if (input.handoffDirectory && isSubpath(path.resolve(input.handoffDirectory), resolved)) {
+    return true;
+  }
+
   return Boolean(input.contextFiles?.some((file) => resolved === path.resolve(file)));
+}
+
+function isWritableHandoffPath(candidate: string, input: NormalizedDelegateInput): boolean {
+  const resolved = path.resolve(input.cwd, candidate);
+  if (input.handoffFilePath && resolved === path.resolve(input.handoffFilePath)) {
+    return true;
+  }
+
+  return Boolean(input.handoffDirectory && isSubpath(path.resolve(input.handoffDirectory), resolved));
 }
 
 async function requestApprovalIfNeeded(
