@@ -1,6 +1,6 @@
 ---
 name: codex-deepseek-delegate
-description: Use when Codex should delegate complex codebase exploration, implementation, verification, task resume, task history lookup, or read-only review through the local deepseek_delegate MCP server. Trigger for requests mentioning DeepSeek delegate, delegate_task, repo-scout, implementer, reviewer-helper, approvedCommands, delegate_status, delegate_history, or using Codex as planner with a DeepSeek/Claude Agent SDK worker.
+description: Delegates complex Codex codebase exploration, implementation, verification, task resume, task history lookup, and read-only review through the local deepseek_delegate MCP server. Use for prompts mentioning DeepSeek delegate, delegate_task, repo-scout, implementer, reviewer-helper, approvedCommands, delegate_status, delegate_history, or a Codex planner with a DeepSeek worker.
 ---
 
 # Codex DeepSeek Delegate
@@ -91,7 +91,7 @@ Review after implementation:
 
 ## approvedCommands
 
-Current Codex clients may not support MCP server-to-client `sampling/createMessage`; runtime approval popups may not appear. If a grey-zone command is known before delegation and Codex approves it, pass it as an exact string in `approvedCommands`.
+Some Codex clients may not support MCP server-to-client `sampling/createMessage`; runtime approval popups may not appear. If a grey-zone command is known before delegation and Codex approves it, pass it as an exact string in `approvedCommands`.
 
 Use `approvedCommands` only for precise grey-zone Bash commands, for example dependency or lockfile operations:
 
@@ -137,6 +137,19 @@ Use `delegate_history` to list recent public summaries:
 
 Treat these tools as the normal way to inspect prior delegate work. They intentionally omit `commandsRun`, `sessionId`, `logPath`, `sdkSessionId`, and worker transcript.
 
+## Failure Handling
+
+Use this table before starting a fresh task:
+
+| Symptom | Response |
+|---|---|
+| MCP tools are not visible | Tell the user `deepseek_delegate` is not installed or enabled; do not simulate delegation. |
+| `taskId was not found` | Treat it as a missing child session. Start fresh only if the user agrees or the task is safe to restart. |
+| Approval unavailable for a grey-zone Bash command | Review the command. If acceptable, retry the same `taskId` with that exact command in `approvedCommands`. |
+| `allowedPaths` blocks an expected file | Retry the same `taskId` with the minimal additional path; mention why the scope changed. |
+| Worker returns `failed` but has a `taskId` | Use `delegate_status`; if resumable, continue the same `taskId` instead of restarting. |
+| Reviewer finds issues | Send a focused follow-up to the same implementer `taskId` when possible. |
+
 ## Review And Final Response
 
 After any implementer task:
@@ -148,3 +161,13 @@ After any implementer task:
 5. Report changed files, tests, and residual risks to the user.
 
 Never treat the DeepSeek worker as the final authority. Codex owns final review.
+
+## Validation Checklist
+
+Before final response, verify:
+
+- Public result was read from the MCP tool response, not worker transcript.
+- Changed files or git diff were inspected directly by Codex.
+- Tests or verification commands were run or clearly reported as not run.
+- `delegate_status` or `delegate_history` was used when continuity or prior task state matters.
+- Any `approvedCommands` entry was exact, necessary, and scoped by `allowedPaths`.
