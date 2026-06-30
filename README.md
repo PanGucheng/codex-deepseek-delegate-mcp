@@ -4,7 +4,7 @@
 
 ## 功能概览
 
-- MCP 工具：`delegate_task`，兼容工具：`delegate_execute`
+- MCP 工具：`delegate_task`、`delegate_status`、`delegate_history`，兼容工具：`delegate_execute`
 - 运行时：TypeScript + Node.js 18+
 - 执行器：`@anthropic-ai/claude-agent-sdk`
 - 模型供应商映射：`DEEPSEEK_API_KEY` 会映射到 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`
@@ -79,7 +79,7 @@ npm run dev
 
 优先使用 `delegate_task`。它接收以下参数：
 
-- `subagentType`：`repo-scout` 或 `implementer`
+- `subagentType`：`repo-scout`、`implementer` 或 `reviewer-helper`
 - `description`：简短任务名
 - `prompt`：完整任务说明
 - `cwd`：目标工作目录。全局安装时应传目标项目的绝对路径；如果未设置 `DEEPSEEK_DELEGATE_WORKSPACE_ROOT`，该 `cwd` 会作为本次任务的 workspace root
@@ -100,6 +100,13 @@ DeepSeek worker 收到的 prompt 只包含任务单路径、`cwd`、subagent 类
 
 `delegate_execute` 仍可用，但只是兼容包装：它会把旧的 `task`、`plan`、`allowedFiles` 映射为 `delegate_task(subagentType="implementer")`。新集成应使用 `delegate_task`。
 
+查询任务状态时使用：
+
+- `delegate_status`：输入 `cwd` 和 `taskId`，返回该任务的公开摘要和最近一次结果
+- `delegate_history`：输入 `cwd`，可选 `limit`、`subagentType`、`status`，返回最近任务公开摘要
+
+这两个查询工具不会返回 `commandsRun`、`sessionId`、`logPath`、`sdkSessionId` 或 worker transcript。
+
 返回结果包含：
 
 - `taskId`：child task 标识；返工时传回这个值以恢复同一 DeepSeek child session
@@ -117,6 +124,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 
 - `repo-scout`：只允许 `Read`、`LS`、`Grep`、`Glob`，不能编辑文件，不能使用 Bash
 - `implementer`：允许 `Read`、`Edit`、`MultiEdit`、`Write`、`LS`、`Grep`、`Glob`、`TodoWrite`，Bash 走策略网关
+- `reviewer-helper`：只允许读文件、搜索、只读/验证类 Bash；不能编辑文件，不能安装依赖，不能用 `approvedCommands` 放行灰区命令
 - 所有 subagent 都不能再调用 Task/subagent，v1 深度固定为 1
 
 对 `implementer` 来说，文件写入是常规能力：`Edit`、`Write`、`MultiEdit` 会在授权范围内自动通过。Bash 工具也可用，策略分为三层：
@@ -176,10 +184,12 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - 简单 Read、Grep、单命令检查不要启动 subagent
 - 多文件、多步骤、需要独立探索或实现时才调用 `delegate_task`
 - 先用 `repo-scout` 做只读探索，再用 `implementer` 做代码修改
+- 对大 diff、多文件或高风险变更，可在 implementer 完成后用 `reviewer-helper` 做只读审查
 - 在工具输入里传入完整任务包
 - 服务端会把任务写入本地 `assignment.md`
 - Codex 只审查最终工具结果和文件变化，不读取 worker 的中间执行 transcript
 - 需要继续同一子任务返工时传回上次 `taskId`
+- 需要查看任务历史时使用 `delegate_status` / `delegate_history`，不要直接读取本地 worker 日志
 
 DeepSeek worker 另有独立 prompt，只负责读取 `assignment.md` 并执行任务。
 
@@ -243,7 +253,21 @@ task registry 保存在：
    - math.js 应该被修复为加法
    - 在 Codex 侧运行 node math.test.js 验证通过
 
-6. 再创建一个新的临时目录测试 approvedCommands：
+6. 查询任务状态与历史：
+   - 调用 delegate_status，cwd 为临时 fixture 目录，taskId 为上面的 taskId
+   - 调用 delegate_history，cwd 为临时 fixture 目录，limit 为 10
+   - 两个工具都不应返回 commandsRun、sessionId、logPath、sdkSessionId 或 worker transcript
+
+7. 调用 reviewer-helper 做只读审查：
+   - subagentType: "reviewer-helper"
+   - cwd: 同一个临时 fixture 目录
+   - contextFiles: ["package.json"]
+   - maxTurns: 6
+   - runVerification: true
+   - prompt: 审查当前 math.js 修复和测试信号，只读，不要编辑文件
+   - 验证 reviewer-helper 返回 completed，且没有修改文件
+
+8. 再创建一个新的临时目录测试 approvedCommands：
    - package.json: {"type":"module"}
    - 调用 delegate_task：
      - subagentType: "implementer"
@@ -254,7 +278,7 @@ task registry 保存在：
      - runVerification: true
      - prompt: 让 DeepSeek 只运行 npm install left-pad --package-lock-only --ignore-scripts，并报告 package-lock.json 是否存在
 
-7. 验证：
+9. 验证：
    - package-lock.json 应该生成
    - 不应出现 sampling/createMessage -32601
    - 如果 Codex 客户端不支持交互 sampling，也应该通过 approvedCommands 预授权路径完成
@@ -263,6 +287,9 @@ task registry 保存在：
 - MCP 工具是否可见
 - resume 是否成功
 - approvedCommands 是否成功
+- delegate_status 是否能查到 resume 的 taskId
+- delegate_history 是否能列出临时目录任务
+- reviewer-helper 是否能只读审查当前 diff
 - 临时目录路径
 - 是否修改了当前项目文件
 - 是否发现 API key 或敏感信息泄露

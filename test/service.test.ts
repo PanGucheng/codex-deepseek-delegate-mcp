@@ -2,7 +2,12 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { executeDelegate, executeDelegateTask } from "../src/service.js";
+import {
+  executeDelegate,
+  executeDelegateTask,
+  getDelegateHistory,
+  getDelegateStatus,
+} from "../src/service.js";
 import { readTaskSessionRegistry } from "../src/task-session-store.js";
 import type { DelegateResult, DelegateRunner, NormalizedDelegateInput, RunnerContext } from "../src/types.js";
 
@@ -128,6 +133,79 @@ describe("executeDelegate", () => {
       subagentType: "implementer",
       model: "deepseek-test",
     });
+  });
+
+  it("returns public delegate status and history without private fields", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-task-query-"));
+    const runner = new FileWritingRunner();
+    const result = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "write worker output",
+        prompt: "write a file",
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+      {
+        runner,
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    const status = await getDelegateStatus(
+      {
+        cwd,
+        taskId: result.taskId,
+      },
+      {
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(status).toMatchObject({
+      taskId: result.taskId,
+      found: true,
+      subagentType: "implementer",
+      sdkSessionKnown: true,
+    });
+    expect(status).toHaveProperty("lastResult");
+    expect(status).not.toHaveProperty("sdkSessionId");
+    expect(status).not.toHaveProperty("logPath");
+    expect(status).not.toHaveProperty("commandsRun");
+    expect(JSON.stringify(status)).not.toContain("11111111-1111-4111-8111-111111111111");
+
+    const history = await getDelegateHistory(
+      {
+        cwd,
+        limit: 5,
+      },
+      {
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    const tasks = history.tasks as Array<Record<string, unknown>>;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      taskId: result.taskId,
+      subagentType: "implementer",
+      status: "completed",
+    });
+    expect(JSON.stringify(history)).not.toContain("commandsRun");
+    expect(JSON.stringify(history)).not.toContain("sdkSessionId");
+    expect(JSON.stringify(history)).not.toContain("logPath");
+
+    const missing = await getDelegateStatus(
+      {
+        cwd,
+        taskId: "task_missing",
+      },
+      {
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+    expect(missing).toEqual({ found: false, taskId: "task_missing" });
   });
 
   it("remembers failed child sessions when the SDK session id is available", async () => {

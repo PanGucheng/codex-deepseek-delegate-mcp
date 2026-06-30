@@ -8,7 +8,12 @@ import {
   type ServerRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { fileURLToPath } from "node:url";
-import { DelegateInputSchema, DelegateTaskInputSchema } from "./types.js";
+import {
+  DelegateHistoryInputSchema,
+  DelegateInputSchema,
+  DelegateStatusInputSchema,
+  DelegateTaskInputSchema,
+} from "./types.js";
 import type {
   CommandApprovalDecision,
   CommandApprovalHandler,
@@ -16,10 +21,15 @@ import type {
   DelegateRunner,
   DelegateResult,
 } from "./types.js";
-import { executeDelegate, executeDelegateTask } from "./service.js";
+import {
+  executeDelegate,
+  executeDelegateTask,
+  getDelegateHistory,
+  getDelegateStatus,
+} from "./service.js";
 
 const SERVER_INSTRUCTIONS =
-  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration and implementer for code changes. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage when the client supports sampling. If sampling is unavailable, Codex can pass approvedCommands with exact grey-zone commands it has already approved for this task. Codex should review only the final public tool result and changed files, not worker transcripts or local logs.";
+  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration, implementer for code changes, and reviewer-helper for read-only review of a completed diff. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage when the client supports sampling. If sampling is unavailable or the command is known before delegation, Codex can pass approvedCommands with exact grey-zone commands it has already approved for this task. Use delegate_status and delegate_history for public task summaries; do not read worker transcripts or local logs unless the user explicitly asks.";
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -59,6 +69,38 @@ export function createDelegateServer(
   );
 
   server.registerTool(
+    "delegate_status",
+    {
+      title: "Get public status for a DeepSeek delegate task",
+      description:
+        "Returns a public summary for one taskId from .delegate/tasks.json and the last result.json. Does not return worker transcripts, commandsRun, logPath, sessionId, or sdkSessionId.",
+      inputSchema: DelegateStatusInputSchema,
+    },
+    async (input, extra): Promise<CallToolResult> => {
+      const result = await getDelegateStatus(input, {
+        env: await getToolEnv(input, env, extra),
+      });
+      return toJsonToolResult(result, false);
+    },
+  );
+
+  server.registerTool(
+    "delegate_history",
+    {
+      title: "List public history for DeepSeek delegate tasks",
+      description:
+        "Lists recent public task summaries from .delegate/tasks.json. Does not return worker transcripts, commandsRun, logPath, sessionId, or sdkSessionId.",
+      inputSchema: DelegateHistoryInputSchema,
+    },
+    async (input, extra): Promise<CallToolResult> => {
+      const result = await getDelegateHistory(input, {
+        env: await getToolEnv(input, env, extra),
+      });
+      return toJsonToolResult(result, false);
+    },
+  );
+
+  server.registerTool(
     "delegate_execute",
     {
       title: "Compatibility wrapper: delegate implementation to DeepSeek worker",
@@ -91,8 +133,11 @@ function createCodexCommandApprovalHandler(
     if (!capabilities?.sampling) {
       return {
         allowed: false,
-        reason:
-          "Codex MCP client does not advertise sampling/createMessage; interactive command approval is unavailable. Pass approvedCommands to delegate_task for exact upfront approval.",
+        reason: [
+          "Codex MCP client does not advertise sampling/createMessage; interactive command approval is unavailable.",
+          "Retry the same taskId with this exact command in delegate_task.approvedCommands if Codex approves it:",
+          JSON.stringify({ approvedCommands: [request.command] }),
+        ].join(" "),
       };
     }
 
@@ -246,6 +291,10 @@ async function getFirstClientRoot(extra: ToolExtra): Promise<string | undefined>
 function toToolResult(result: DelegateResult): CallToolResult {
   const publicResult = toPublicResult(result);
 
+  return toJsonToolResult(publicResult, result.status === "failed");
+}
+
+function toJsonToolResult(publicResult: unknown, isError: boolean): CallToolResult {
   return {
     content: [
       {
@@ -253,8 +302,8 @@ function toToolResult(result: DelegateResult): CallToolResult {
         text: JSON.stringify(publicResult, null, 2),
       },
     ],
-    structuredContent: publicResult as unknown as Record<string, unknown>,
-    isError: result.status === "failed",
+    structuredContent: publicResult as Record<string, unknown>,
+    isError,
   };
 }
 

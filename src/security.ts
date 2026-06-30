@@ -229,6 +229,12 @@ export function authorizeTool(
         command,
       };
     }
+    if (input.subagentType === "reviewer-helper") {
+      return classifyReviewerCommand(command, {
+        cwd: input.cwd,
+        allowedPaths: input.allowedPaths,
+      });
+    }
     return classifyCommand(command, {
       cwd: input.cwd,
       allowedPaths: input.allowedPaths,
@@ -238,6 +244,8 @@ export function authorizeTool(
   const allowedToolNames =
     input.subagentType === "repo-scout"
       ? new Set(["Read", "LS", "Grep", "Glob"])
+      : input.subagentType === "reviewer-helper"
+        ? new Set(["Read", "LS", "Grep", "Glob", "Bash", "TodoWrite"])
       : new Set(["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"]);
   if (!allowedToolNames.has(toolName)) {
     return {
@@ -265,6 +273,34 @@ export function authorizeTool(
   }
 
   return { allowed: true, reason: "tool is allowed by the default policy" };
+}
+
+function classifyReviewerCommand(
+  command: string,
+  context: CommandPolicyContext,
+): CommandDecision {
+  const decision = classifyCommand(command, context);
+  if (!decision.allowed) {
+    return {
+      ...decision,
+      requiresApproval: false,
+      reason: decision.requiresApproval
+        ? `reviewer-helper cannot request approval for grey-zone Bash commands: ${decision.reason}`
+        : decision.reason,
+    };
+  }
+
+  if (decision.writesFiles) {
+    return {
+      ...decision,
+      allowed: false,
+      hardDeny: true,
+      writesFiles: false,
+      reason: "reviewer-helper is read-only and cannot use Bash to write files",
+    };
+  }
+
+  return decision;
 }
 
 function isWriteTool(toolName: string): boolean {

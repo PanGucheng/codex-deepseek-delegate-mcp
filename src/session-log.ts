@@ -110,9 +110,13 @@ async function formatAssignment(
     "- Context files are read-only references, even when they are outside cwd or allowedPaths.",
     "- Do not modify global configuration, push commits, or run destructive commands.",
     "- Do not call other subagents or task tools. Subagent depth is fixed at 1.",
+    "- Only run grey-zone Bash commands listed under Pre-Approved Commands. If another grey-zone command is needed, stop and report it.",
+    input.subagentType === "reviewer-helper"
+      ? "- You are read-only: do not edit files, do not install dependencies, and do not use Bash to write files."
+      : "",
     "- Finish with a compact report containing Summary, Changed files, Commands run, Tests, and Risks.",
     "",
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
 }
 
 async function formatContextFileContents(contextFiles: string[]): Promise<string> {

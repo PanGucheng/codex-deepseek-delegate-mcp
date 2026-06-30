@@ -13,6 +13,8 @@ const IMPLEMENTER_AUTO_ALLOWED_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "L
 const IMPLEMENTER_NO_BASH_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
 const SCOUT_TOOLS = ["Read", "LS", "Grep", "Glob"];
 const SCOUT_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob"];
+const REVIEWER_TOOLS = ["Read", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
+const REVIEWER_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob", "TodoWrite"];
 
 export class ClaudeRunner implements DelegateRunner {
   constructor(private readonly env: ProcessEnv = process.env) {}
@@ -44,7 +46,7 @@ export class ClaudeRunner implements DelegateRunner {
         env: deepSeek.env,
         model,
         maxTurns: input.maxTurns,
-        permissionMode: input.subagentType === "repo-scout" ? "default" : "acceptEdits",
+        permissionMode: input.subagentType === "implementer" ? "acceptEdits" : "default",
         tools,
         allowedTools,
         canUseTool: createCanUseTool(input, context.commandsRun, context.tests, {
@@ -131,23 +133,38 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     "This assignment file supersedes any previous assignment or file-scope instruction in this conversation.",
     `Assignment file: ${assignmentFile}`,
     "",
-    input.subagentType === "repo-scout"
-      ? "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise rationale. Do not edit files or use Bash."
-      : input.runVerification
-        ? "Implement the assignment. Use Edit, MultiEdit, or Write for file modifications. Do not use Bash redirection or shell commands to edit files unless the direct file tools fail. Bash is policy-gated and should be used mainly for verification or simple inspection."
-        : "Implement the assignment. Bash is not available for this task because verification was not requested. Use Edit, MultiEdit, or Write for file modifications and finish without running shell commands.",
+    roleInstruction(input),
     "Do not call other subagents or task tools. Subagent depth is fixed at 1.",
     "Keep changes tightly scoped, do not modify global configuration, do not push commits, and do not run destructive commands.",
     "Use only the tools made available by the host.",
     "",
     `cwd: ${input.cwd}`,
-    "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
+    input.subagentType === "reviewer-helper"
+      ? "Finish with a compact report containing Findings, Tests Observed, Risks, and Suggested Follow-up."
+      : "Finish with a compact report containing Summary, Changed files, Commands run, and Tests.",
   ].join("\n");
+}
+
+function roleInstruction(input: NormalizedDelegateInput): string {
+  if (input.subagentType === "repo-scout") {
+    return "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise rationale. Do not edit files or use Bash.";
+  }
+
+  if (input.subagentType === "reviewer-helper") {
+    return "You are a read-only reviewer helper. Inspect the current diff, relevant files, and test signals. Do not edit files. Do not run commands that mutate files or install dependencies. Report only real findings; if none are found, say so and list residual risks.";
+  }
+
+  return input.runVerification
+    ? "Implement the assignment. Use Edit, MultiEdit, or Write for file modifications. Do not use Bash redirection or shell commands to edit files unless the direct file tools fail. Bash is policy-gated and should be used mainly for verification or simple inspection."
+    : "Implement the assignment. Bash is not available for this task because verification was not requested. Use Edit, MultiEdit, or Write for file modifications and finish without running shell commands.";
 }
 
 function getTools(input: NormalizedDelegateInput): string[] {
   if (input.subagentType === "repo-scout") {
     return SCOUT_TOOLS;
+  }
+  if (input.subagentType === "reviewer-helper") {
+    return input.runVerification ? REVIEWER_TOOLS : SCOUT_TOOLS;
   }
 
   return input.runVerification ? IMPLEMENTER_TOOLS : IMPLEMENTER_NO_BASH_TOOLS;
@@ -156,6 +173,9 @@ function getTools(input: NormalizedDelegateInput): string[] {
 function getAutoAllowedTools(input: NormalizedDelegateInput): string[] {
   if (input.subagentType === "repo-scout") {
     return SCOUT_AUTO_ALLOWED_TOOLS;
+  }
+  if (input.subagentType === "reviewer-helper") {
+    return REVIEWER_AUTO_ALLOWED_TOOLS;
   }
 
   return IMPLEMENTER_AUTO_ALLOWED_TOOLS;

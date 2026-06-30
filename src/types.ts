@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const SubagentTypeSchema = z.enum(["repo-scout", "implementer"]);
+export const SubagentTypeSchema = z.enum(["repo-scout", "implementer", "reviewer-helper"]);
 
 export const DelegateTaskInputSchema = z
   .object({
@@ -31,9 +31,28 @@ export const DelegateInputSchema = z
   })
   .strict();
 
+export const DelegateStatusInputSchema = z
+  .object({
+    cwd: z.string().optional(),
+    taskId: z.string().min(1).max(160),
+    includeLastResult: z.boolean().default(true),
+  })
+  .strict();
+
+export const DelegateHistoryInputSchema = z
+  .object({
+    cwd: z.string().optional(),
+    limit: z.number().int().min(1).max(50).default(10),
+    subagentType: SubagentTypeSchema.optional(),
+    status: z.enum(["completed", "blocked", "failed"]).optional(),
+  })
+  .strict();
+
 export type SubagentType = z.infer<typeof SubagentTypeSchema>;
 export type DelegateTaskInput = z.infer<typeof DelegateTaskInputSchema>;
 export type DelegateInput = z.infer<typeof DelegateInputSchema>;
+export type DelegateStatusInput = z.infer<typeof DelegateStatusInputSchema>;
+export type DelegateHistoryInput = z.infer<typeof DelegateHistoryInputSchema>;
 
 export type DelegateStatus = "completed" | "blocked" | "failed";
 

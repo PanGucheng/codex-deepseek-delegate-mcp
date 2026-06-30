@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ConfigError, getWorkspaceRoot } from "./config.js";
 import {
@@ -11,12 +12,16 @@ import { createRunnerFromEnv } from "./runner.js";
 import { createSessionLog } from "./session-log.js";
 import {
   createTaskId,
+  readTaskSessionRegistry,
   rememberTaskSession,
   resolveResumeTask,
+  type TaskSessionRecord,
 } from "./task-session-store.js";
 import {
   DelegateError,
+  DelegateHistoryInputSchema,
   DelegateInputSchema,
+  DelegateStatusInputSchema,
   DelegateTaskInputSchema,
   type DelegateInput,
   type DelegateResult,
@@ -86,6 +91,95 @@ export async function executeDelegate(
   return executeDelegateTask(legacyToTaskInput(parsed.data), options);
 }
 
+export async function getDelegateStatus(
+  rawInput: unknown,
+  options: ExecuteDelegateOptions = {},
+): Promise<Record<string, unknown>> {
+  const env = options.env || process.env;
+  const workspaceRoot = path.resolve(getWorkspaceRoot(env, getRequestedCwd(rawInput)));
+  const parsed = DelegateStatusInputSchema.safeParse(rawInput);
+
+  if (!parsed.success) {
+    return {
+      found: false,
+      taskId: "task_invalid",
+      summary: parsed.error.message,
+    };
+  }
+
+  let cwd: string;
+  try {
+    cwd = resolveCwdInsideWorkspace(parsed.data.cwd, workspaceRoot);
+  } catch (error) {
+    return {
+      found: false,
+      taskId: parsed.data.taskId,
+      summary: errorToSummary(error),
+    };
+  }
+
+  const registry = await readTaskSessionRegistry(cwd);
+  const record = registry.tasks[parsed.data.taskId];
+  if (!record) {
+    return {
+      found: false,
+      taskId: parsed.data.taskId,
+    };
+  }
+
+  return toPublicStatus(record, parsed.data.includeLastResult);
+}
+
+export async function getDelegateHistory(
+  rawInput: unknown,
+  options: ExecuteDelegateOptions = {},
+): Promise<Record<string, unknown>> {
+  const env = options.env || process.env;
+  const workspaceRoot = path.resolve(getWorkspaceRoot(env, getRequestedCwd(rawInput)));
+  const parsed = DelegateHistoryInputSchema.safeParse(rawInput);
+
+  if (!parsed.success) {
+    return {
+      cwd: workspaceRoot,
+      tasks: [],
+      summary: parsed.error.message,
+    };
+  }
+
+  let cwd: string;
+  try {
+    cwd = resolveCwdInsideWorkspace(parsed.data.cwd, workspaceRoot);
+  } catch (error) {
+    return {
+      cwd: workspaceRoot,
+      tasks: [],
+      summary: errorToSummary(error),
+    };
+  }
+
+  const registry = await readTaskSessionRegistry(cwd);
+  const records = Object.values(registry.tasks)
+    .filter((record) => !parsed.data.subagentType || record.subagentType === parsed.data.subagentType)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  const tasks = [];
+  for (const record of records) {
+    const result = await readLastResult(record);
+    if (parsed.data.status && result?.status !== parsed.data.status) {
+      continue;
+    }
+    tasks.push(toPublicHistoryItem(record, result));
+    if (tasks.length >= parsed.data.limit) {
+      break;
+    }
+  }
+
+  return {
+    cwd,
+    tasks,
+  };
+}
+
 async function prepareTaskInput(
   input: DelegateTaskInput,
   workspaceRoot: string,
@@ -115,6 +209,20 @@ async function prepareTaskInput(
     },
     resolvedRoot,
   );
+}
+
+function resolveCwdInsideWorkspace(cwd: string | undefined, workspaceRoot: string): string {
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedCwd = path.resolve(cwd || resolvedRoot);
+
+  if (!isSubpath(resolvedRoot, resolvedCwd)) {
+    throw new DelegateError(
+      `cwd must stay inside workspace root. workspaceRoot=${resolvedRoot} cwd=${resolvedCwd}`,
+      "blocked",
+    );
+  }
+
+  return resolvedCwd;
 }
 
 async function runDelegateTask(
@@ -315,4 +423,58 @@ function getRequestedCwd(rawInput: unknown): string | undefined {
 
   const cwd = (rawInput as { cwd?: unknown }).cwd;
   return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
+}
+
+async function readLastResult(record: TaskSessionRecord): Promise<DelegateResult | undefined> {
+  try {
+    const resultPath = path.join(record.cwd, ".delegate", "sessions", record.lastDelegateSessionId, "result.json");
+    const text = await fs.readFile(resultPath, "utf8");
+    return JSON.parse(text) as DelegateResult;
+  } catch {
+    return undefined;
+  }
+}
+
+async function toPublicStatus(record: TaskSessionRecord, includeLastResult: boolean) {
+  const lastResult = includeLastResult ? await readLastResult(record) : undefined;
+  return {
+    taskId: record.taskId,
+    found: true,
+    subagentType: record.subagentType,
+    cwd: record.cwd,
+    model: record.model,
+    sdkSessionKnown: Boolean(record.sdkSessionId),
+    allowedPaths: record.allowedPaths,
+    lastDelegateSessionId: record.lastDelegateSessionId,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(lastResult ? { lastResult: toPublicLastResult(lastResult) } : {}),
+  };
+}
+
+function toPublicHistoryItem(record: TaskSessionRecord, result: DelegateResult | undefined) {
+  return {
+    taskId: record.taskId,
+    subagentType: record.subagentType,
+    updatedAt: record.updatedAt,
+    lastDelegateSessionId: record.lastDelegateSessionId,
+    ...(result
+      ? {
+          status: result.status,
+          summary: result.summary,
+          changedFiles: result.changedFiles,
+          tests: result.tests.map(({ command, status }) => ({ command, status })),
+        }
+      : {}),
+  };
+}
+
+function toPublicLastResult(result: DelegateResult) {
+  return {
+    status: result.status,
+    summary: result.summary,
+    changedFiles: result.changedFiles,
+    tests: result.tests.map(({ command, status }) => ({ command, status })),
+    resumed: result.resumed,
+  };
 }

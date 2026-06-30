@@ -56,6 +56,8 @@ describe("MCP server", () => {
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toContain("delegate_execute");
     expect(tools.tools.map((tool) => tool.name)).toContain("delegate_task");
+    expect(tools.tools.map((tool) => tool.name)).toContain("delegate_status");
+    expect(tools.tools.map((tool) => tool.name)).toContain("delegate_history");
 
     const result = await client.callTool({
       name: "delegate_task",
@@ -95,6 +97,49 @@ describe("MCP server", () => {
       },
     });
     expect((legacy.structuredContent as Record<string, unknown>).subagentType).toBe("implementer");
+
+    const reviewer = await client.callTool({
+      name: "delegate_task",
+      arguments: {
+        subagentType: "reviewer-helper",
+        description: "review nothing",
+        prompt: "review nothing",
+        cwd,
+        maxTurns: 1,
+        runVerification: false,
+      },
+    });
+    const reviewerStructured = reviewer.structuredContent as Record<string, unknown>;
+    expect(reviewerStructured.subagentType).toBe("reviewer-helper");
+
+    const status = await client.callTool({
+      name: "delegate_status",
+      arguments: {
+        cwd,
+        taskId: reviewerStructured.taskId,
+      },
+    });
+    const statusStructured = status.structuredContent as Record<string, unknown>;
+    expect(statusStructured).toMatchObject({
+      taskId: reviewerStructured.taskId,
+      found: true,
+      subagentType: "reviewer-helper",
+    });
+    expect(JSON.stringify(statusStructured)).not.toContain("sdkSessionId");
+    expect(JSON.stringify(statusStructured)).not.toContain("commandsRun");
+    expect(JSON.stringify(statusStructured)).not.toContain("logPath");
+
+    const history = await client.callTool({
+      name: "delegate_history",
+      arguments: {
+        cwd,
+        limit: 10,
+      },
+    });
+    const historyStructured = history.structuredContent as { tasks?: Array<Record<string, unknown>> };
+    expect(historyStructured.tasks?.some((task) => task.taskId === reviewerStructured.taskId)).toBe(true);
+    expect(JSON.stringify(historyStructured)).not.toContain("sdkSessionId");
+    expect(JSON.stringify(historyStructured)).not.toContain("commandsRun");
 
     await client.close();
     await server.close();

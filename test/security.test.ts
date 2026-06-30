@@ -129,6 +129,40 @@ describe("tool policy", () => {
     expect(authorizeTool("TodoWrite", { todos: [] }, scout).allowed).toBe(false);
   });
 
+  it("keeps reviewer-helper read-only but allows read-only and verification Bash", () => {
+    const reviewer = { ...input, subagentType: "reviewer-helper" as const };
+
+    expect(authorizeTool("Read", { file_path: "src/index.ts" }, reviewer).allowed).toBe(true);
+    expect(authorizeTool("Edit", { file_path: "src/index.ts" }, reviewer).allowed).toBe(false);
+    expect(authorizeTool("Write", { file_path: "src/index.ts" }, reviewer).allowed).toBe(false);
+    expect(authorizeTool("Bash", { command: "git diff -- src/index.ts" }, reviewer).allowed).toBe(true);
+    expect(authorizeTool("Bash", { command: "npm test" }, reviewer).allowed).toBe(true);
+
+    const bashWrite = authorizeTool("Bash", { command: 'echo "hello" > notes.txt' }, reviewer);
+    expect(bashWrite.allowed).toBe(false);
+    expect(bashWrite.reason).toContain("reviewer-helper is read-only");
+  });
+
+  it("does not let reviewer-helper use approvedCommands for grey-zone Bash", async () => {
+    const commandsRun: CommandRecord[] = [];
+    const tests: TestRecord[] = [];
+    const reviewer = {
+      ...input,
+      subagentType: "reviewer-helper" as const,
+      approvedCommands: ["npm install left-pad"],
+    };
+    const canUseTool = createCanUseTool(reviewer, commandsRun, tests);
+
+    const result = await canUseTool("Bash", { command: "npm install left-pad" }, toolOptions());
+
+    expect(result.behavior).toBe("deny");
+    expect(commandsRun[0]).toMatchObject({
+      command: "npm install left-pad",
+      status: "denied",
+    });
+    expect(commandsRun[0]?.reason).toContain("reviewer-helper cannot request approval");
+  });
+
   it("blocks unavailable tools", () => {
     expect(authorizeTool("WebFetch", { url: "https://example.test" }, input).allowed).toBe(false);
   });
