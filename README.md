@@ -199,6 +199,75 @@ task registry 保存在：
 
 每次调用都会创建新的本地审计 session 目录和新的 `assignment.md`。是否恢复 DeepSeek child session 只由 `taskId` 决定；不再按 `cwd + model` 自动复用，避免跨任务上下文污染。权限层会按当前 `allowedPaths` 重新校验，不信任旧对话里残留的写入范围。
 
+## Codex 验收提示词
+
+全局安装后，可以新开一个 Codex 对话并复制下面的提示词做真实验收。它只使用临时目录作为 `cwd`，不会修改当前项目文件。
+
+```text
+请测试我全局安装的 MCP server：deepseek_delegate。
+
+目标：验证 delegate_task 的两个关键能力，不要修改当前项目文件。请全程使用临时目录作为 cwd。
+
+步骤：
+1. 创建一个临时 fixture 目录，包含：
+   - package.json，内容为 {"type":"module"}
+   - math.js，内容为错误实现：export function add(a, b) { return a - b; }
+   - math.test.js，使用 node assert 验证 add(2,3)=5，并成功时输出 ok
+
+2. 调用 deepseek_delegate.delegate_task：
+   - subagentType: "implementer"
+   - cwd: 临时 fixture 目录的绝对路径
+   - allowedPaths: ["math.js"]
+   - contextFiles: ["package.json"]
+   - maxTurns: 1
+   - runVerification: false
+   - prompt: 让 DeepSeek 修复 math.js，但故意给很低 maxTurns，测试失败任务是否仍能 resume
+
+3. 记录第一次返回：
+   - status
+   - taskId
+   - changedFiles
+   - 如果 status=failed，也继续下一步
+
+4. 用同一个 taskId 再次调用 delegate_task：
+   - subagentType: "implementer"
+   - cwd: 同一个临时 fixture 目录
+   - allowedPaths: ["math.js"]
+   - contextFiles: ["package.json"]
+   - maxTurns: 6
+   - runVerification: false
+   - prompt: 继续同一任务，修复 math.js，不要运行 shell 命令
+
+5. 验证：
+   - 第二次不应返回 “taskId was not found in .delegate/tasks.json”
+   - math.js 应该被修复为加法
+   - 在 Codex 侧运行 node math.test.js 验证通过
+
+6. 再创建一个新的临时目录测试 approvedCommands：
+   - package.json: {"type":"module"}
+   - 调用 delegate_task：
+     - subagentType: "implementer"
+     - cwd: 临时目录
+     - allowedPaths: ["package.json", "package-lock.json"]
+     - approvedCommands: ["npm install left-pad --package-lock-only --ignore-scripts"]
+     - maxTurns: 8
+     - runVerification: true
+     - prompt: 让 DeepSeek 只运行 npm install left-pad --package-lock-only --ignore-scripts，并报告 package-lock.json 是否存在
+
+7. 验证：
+   - package-lock.json 应该生成
+   - 不应出现 sampling/createMessage -32601
+   - 如果 Codex 客户端不支持交互 sampling，也应该通过 approvedCommands 预授权路径完成
+
+请最后汇总：
+- MCP 工具是否可见
+- resume 是否成功
+- approvedCommands 是否成功
+- 临时目录路径
+- 是否修改了当前项目文件
+- 是否发现 API key 或敏感信息泄露
+```
+
 ## 真实 DeepSeek Smoke Test
 
 真实 DeepSeek 调用默认跳过。只读 smoke test 需要显式设置以下环境变量才会运行：
