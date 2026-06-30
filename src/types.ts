@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const SubagentTypeSchema = z.enum(["repo-scout", "implementer", "reviewer-helper"]);
+export const BashPolicySchema = z.enum(["strict", "balanced", "trusted"]);
 
 export const DelegateTaskInputSchema = z
   .object({
@@ -11,8 +12,13 @@ export const DelegateTaskInputSchema = z
     allowedPaths: z.array(z.string().min(1)).optional(),
     contextFiles: z.array(z.string().min(1)).optional(),
     approvedCommands: z.array(z.string().min(1)).optional(),
+    approvedCommandPrefixes: z.array(z.string().min(1)).optional(),
+    executionPlan: z.array(z.string().min(1)).optional(),
+    acceptanceCriteria: z.array(z.string().min(1)).optional(),
+    fallbackPolicy: z.enum(["ask-codex"]).optional(),
+    bashPolicy: BashPolicySchema.optional(),
     taskId: z.string().min(1).max(160).optional(),
-    maxTurns: z.number().int().min(1).max(100).default(12),
+    maxTurns: z.number().int().min(1).max(100).optional(),
     runVerification: z.boolean().default(true),
   })
   .strict();
@@ -23,7 +29,7 @@ export const DelegateInputSchema = z
     plan: z.string().optional(),
     cwd: z.string().optional(),
     allowedFiles: z.array(z.string().min(1)).optional(),
-    maxTurns: z.number().int().min(1).max(100).default(12),
+    maxTurns: z.number().int().min(1).max(100).optional(),
     runVerification: z.boolean().default(true),
     conversationMode: z.enum(["reuse", "fresh", "ephemeral"]).default("reuse"),
     conversationKey: z.string().min(1).max(160).optional(),
@@ -49,6 +55,7 @@ export const DelegateHistoryInputSchema = z
   .strict();
 
 export type SubagentType = z.infer<typeof SubagentTypeSchema>;
+export type BashPolicy = z.infer<typeof BashPolicySchema>;
 export type DelegateTaskInput = z.infer<typeof DelegateTaskInputSchema>;
 export type DelegateInput = z.infer<typeof DelegateInputSchema>;
 export type DelegateStatusInput = z.infer<typeof DelegateStatusInputSchema>;

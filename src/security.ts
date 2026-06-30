@@ -1,6 +1,7 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import type {
+  BashPolicy,
   CommandApprovalHandler,
   CommandRecord,
   NormalizedDelegateInput,
@@ -21,6 +22,7 @@ export type CommandDecision = {
 type CommandPolicyContext = {
   cwd?: string;
   allowedPaths?: string[];
+  bashPolicy?: BashPolicy;
 };
 
 type CanUseToolOptions = {
@@ -39,6 +41,12 @@ const SAFE_READ_ONLY_COMMANDS = [
   /^find\s+/i,
   /^node\s+--version$/i,
   /^git\s+(status|diff|log|show|rev-parse|ls-files|branch\s+--show-current)(\s|$)/i,
+  /^git\s+(grep|blame|describe|ls-tree)(\s|$)/i,
+  /^get-childitem(\s|$)/i,
+  /^select-string(\s|$)/i,
+  /^test-path(\s|$)/i,
+  /^where(?:\.exe)?(\s|$)/i,
+  /^which(\s|$)/i,
 ];
 
 const SAFE_VERIFICATION_COMMANDS = [
@@ -55,6 +63,12 @@ const SAFE_VERIFICATION_COMMANDS = [
   /^mvn\s+test(\s|$)/i,
   /^gradle\s+test(\s|$)/i,
   /^dotnet\s+test(\s|$)/i,
+  /^(npm|pnpm|yarn|bun)\s+run\s+[\w:.-]+(\s|$)/i,
+  /^(npm|pnpm|yarn|bun)\s+(build|lint|typecheck|check)(\s|$)/i,
+  /^(vite|webpack|rollup|tsup|tsx)(\s|$)/i,
+  /^cargo\s+(build|check|clippy)(\s|$)/i,
+  /^go\s+(build|vet|test)(\s|$)/i,
+  /^dotnet\s+(build|test)(\s|$)/i,
 ];
 
 const DENIED_PATTERNS: Array<[RegExp, string]> = [
@@ -69,6 +83,15 @@ const DENIED_PATTERNS: Array<[RegExp, string]> = [
   [/\bnpm\s+config\b/i, "npm config changes are denied"],
   [/\b(?:curl|wget|iwr|invoke-webrequest)\b[\s\S]*(?:\|\s*(?:sh|bash|pwsh|powershell)|\biex\b|\binvoke-expression\b)/i, "download-and-execute commands are denied"],
   [/\b(?:setx|reg\s+(?:add|delete)|chmod\s+777)\b/i, "global or broad permission changes are denied"],
+  [/\b(?:cat|type|get-content|echo|printenv)\b[\s\S]*(?:\.env\b|\.ssh\b|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN)/i, "credential access is denied"],
+  [/\b(?:npm\s+publish|pnpm\s+publish|yarn\s+npm\s+publish|docker\s+push|gh\s+release|vercel\s+deploy)\b/i, "publish or deploy commands are denied"],
+];
+
+const PACKAGE_INSTALL_COMMANDS = [
+  /^(npm|pnpm|yarn|bun)\s+(install|add|remove|update|upgrade)(\s|$)/i,
+  /^pip\s+install(\s|$)/i,
+  /^poetry\s+add(\s|$)/i,
+  /^cargo\s+add(\s|$)/i,
 ];
 
 export function classifyCommand(
@@ -76,6 +99,7 @@ export function classifyCommand(
   context: CommandPolicyContext = {},
 ): CommandDecision {
   const trimmed = command.trim();
+  const bashPolicy = context.bashPolicy || "strict";
   if (!trimmed) {
     return { allowed: false, reason: "empty command", command };
   }
@@ -141,6 +165,23 @@ export function classifyCommand(
 
   for (const part of parts) {
     if (!isSafeSubcommand(part)) {
+      if (bashPolicy === "balanced" || bashPolicy === "trusted") {
+        if (bashPolicy === "balanced" && isPackageInstallSubcommand(part)) {
+          return {
+            allowed: false,
+            reason: `package dependency command requires Codex approval: ${part}`,
+            command: trimmed,
+            requiresApproval: true,
+          };
+        }
+
+        return {
+          allowed: true,
+          reason: `command is allowed by ${bashPolicy} Bash policy`,
+          command: trimmed,
+        };
+      }
+
       return {
         allowed: false,
         reason: `command is not in the default allowlist: ${part}`,
@@ -164,6 +205,10 @@ function isSafeSubcommand(command: string): boolean {
   return [...SAFE_READ_ONLY_COMMANDS, ...SAFE_VERIFICATION_COMMANDS].some((pattern) =>
     pattern.test(command),
   );
+}
+
+function isPackageInstallSubcommand(command: string): boolean {
+  return PACKAGE_INSTALL_COMMANDS.some((pattern) => pattern.test(command));
 }
 
 export function isVerificationCommand(command: string): boolean {
@@ -223,11 +268,11 @@ export function authorizeTool(
   if (toolName === "Bash") {
     const command = String(toolInput.command || "");
     if (input.subagentType === "repo-scout") {
-      return {
-        allowed: false,
-        reason: "repo-scout is read-only and cannot use Bash",
-        command,
-      };
+      return classifyReadOnlyCommand(command, {
+        cwd: input.cwd,
+        allowedPaths: input.allowedPaths,
+        bashPolicy: "strict",
+      });
     }
     if (input.subagentType === "reviewer-helper") {
       return classifyReviewerCommand(command, {
@@ -238,12 +283,13 @@ export function authorizeTool(
     return classifyCommand(command, {
       cwd: input.cwd,
       allowedPaths: input.allowedPaths,
+      bashPolicy: input.bashPolicy,
     });
   }
 
   const allowedToolNames =
     input.subagentType === "repo-scout"
-      ? new Set(["Read", "LS", "Grep", "Glob"])
+      ? new Set(["Read", "LS", "Grep", "Glob", "Bash"])
       : input.subagentType === "reviewer-helper"
         ? new Set(["Read", "LS", "Grep", "Glob", "Bash", "TodoWrite"])
       : new Set(["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"]);
@@ -273,6 +319,34 @@ export function authorizeTool(
   }
 
   return { allowed: true, reason: "tool is allowed by the default policy" };
+}
+
+function classifyReadOnlyCommand(
+  command: string,
+  context: CommandPolicyContext,
+): CommandDecision {
+  const decision = classifyCommand(command, context);
+  if (!decision.allowed) {
+    return {
+      ...decision,
+      requiresApproval: false,
+      reason: decision.requiresApproval
+        ? `repo-scout cannot request approval for grey-zone Bash commands: ${decision.reason}`
+        : decision.reason,
+    };
+  }
+
+  if (decision.writesFiles) {
+    return {
+      ...decision,
+      allowed: false,
+      hardDeny: true,
+      writesFiles: false,
+      reason: "repo-scout is read-only and cannot use Bash to write files",
+    };
+  }
+
+  return decision;
 }
 
 function classifyReviewerCommand(
@@ -325,12 +399,13 @@ async function requestApprovalIfNeeded(
     return decision;
   }
 
-  if (isPreApprovedCommand(decision.command, input.approvedCommands)) {
+  const preApproval = getPreApproval(decision.command, input.approvedCommands, input.approvedCommandPrefixes);
+  if (preApproval) {
     return {
       ...decision,
       allowed: true,
       writesFiles: false,
-      reason: "Codex pre-approved exact command in delegate_task input",
+      reason: `Codex pre-approved ${preApproval} in delegate_task input`,
       approvedByCodex: true,
     };
   }
@@ -380,17 +455,28 @@ async function requestApprovalIfNeeded(
   }
 }
 
-function isPreApprovedCommand(command: string, approvedCommands?: string[]): boolean {
-  if (!approvedCommands?.length) {
-    return false;
-  }
-
+function getPreApproval(
+  command: string,
+  approvedCommands?: string[],
+  approvedCommandPrefixes?: string[],
+): "exact command" | "command prefix" | undefined {
   const trimmed = command.trim();
   const withoutCd = stripLeadingCd(trimmed);
-  return approvedCommands.some((approved) => {
+  if (approvedCommands?.some((approved) => {
     const approvedTrimmed = approved.trim();
     return approvedTrimmed === trimmed || approvedTrimmed === withoutCd;
-  });
+  })) {
+    return "exact command";
+  }
+
+  if (approvedCommandPrefixes?.some((approved) => {
+    const approvedTrimmed = approved.trim();
+    return approvedTrimmed.length > 0 && (trimmed.startsWith(approvedTrimmed) || withoutCd.startsWith(approvedTrimmed));
+  })) {
+    return "command prefix";
+  }
+
+  return undefined;
 }
 
 function commandStatus(decision: CommandDecision): CommandRecord["status"] {

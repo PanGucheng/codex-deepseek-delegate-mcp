@@ -112,7 +112,9 @@ describe("executeDelegate", () => {
         cwd,
         allowedPaths: ["src/**"],
         contextFiles: [],
-        maxTurns: 1,
+        executionPlan: ["Create worker-output.txt in the target project."],
+        acceptanceCriteria: ["worker-output.txt exists."],
+        approvedCommandPrefixes: ["npm run build"],
         runVerification: false,
       },
       {
@@ -125,6 +127,8 @@ describe("executeDelegate", () => {
     expect(result.taskId).toMatch(/^task_/);
     expect(runner.lastInput?.resumed).toBe(false);
     expect(runner.lastInput?.allowedPaths?.[0]).toBe(path.join(cwd, "src"));
+    expect(runner.lastInput?.maxTurns).toBeUndefined();
+    expect(runner.lastInput?.bashPolicy).toBe("balanced");
 
     const registry = await readTaskSessionRegistry(cwd);
     expect(registry.tasks[result.taskId]).toMatchObject({
@@ -133,6 +137,16 @@ describe("executeDelegate", () => {
       subagentType: "implementer",
       model: "deepseek-test",
     });
+
+    const assignment = await fs.readFile(runner.lastInput!.assignmentFilePath!, "utf8");
+    expect(assignment).toContain("maxTurns: unlimited");
+    expect(assignment).toContain("bashPolicy: balanced");
+    expect(assignment).toContain("## Codex Execution Plan");
+    expect(assignment).toContain("Create worker-output.txt");
+    expect(assignment).toContain("## Acceptance Criteria");
+    expect(assignment).toContain("worker-output.txt exists");
+    expect(assignment).toContain("## Pre-Approved Command Prefixes");
+    expect(assignment).toContain("npm run build");
   });
 
   it("returns public delegate status and history without private fields", async () => {

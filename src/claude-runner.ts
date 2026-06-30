@@ -11,7 +11,7 @@ import type {
 const IMPLEMENTER_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
 const IMPLEMENTER_AUTO_ALLOWED_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
 const IMPLEMENTER_NO_BASH_TOOLS = ["Read", "Edit", "MultiEdit", "Write", "LS", "Grep", "Glob", "TodoWrite"];
-const SCOUT_TOOLS = ["Read", "LS", "Grep", "Glob"];
+const SCOUT_TOOLS = ["Read", "LS", "Grep", "Glob", "Bash"];
 const SCOUT_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob"];
 const REVIEWER_TOOLS = ["Read", "LS", "Grep", "Glob", "Bash", "TodoWrite"];
 const REVIEWER_AUTO_ALLOWED_TOOLS = ["Read", "LS", "Grep", "Glob", "TodoWrite"];
@@ -39,24 +39,26 @@ export class ClaudeRunner implements DelegateRunner {
       persistSession: true,
     });
 
+    const options = {
+      cwd: input.cwd,
+      env: deepSeek.env,
+      model,
+      ...(input.maxTurns ? { maxTurns: input.maxTurns } : {}),
+      permissionMode: input.subagentType === "implementer" ? "acceptEdits" : "default",
+      tools,
+      allowedTools,
+      canUseTool: createCanUseTool(input, context.commandsRun, context.tests, {
+        commandApprovalHandler: context.commandApprovalHandler,
+      }),
+      persistSession: true,
+      enableFileCheckpointing: true,
+      includePartialMessages: false,
+      ...(input.resumeSdkSessionId ? { resume: input.resumeSdkSessionId } : {}),
+    } as const;
+
     const iterator = query({
       prompt,
-      options: {
-        cwd: input.cwd,
-        env: deepSeek.env,
-        model,
-        maxTurns: input.maxTurns,
-        permissionMode: input.subagentType === "implementer" ? "acceptEdits" : "default",
-        tools,
-        allowedTools,
-        canUseTool: createCanUseTool(input, context.commandsRun, context.tests, {
-          commandApprovalHandler: context.commandApprovalHandler,
-        }),
-        persistSession: true,
-        enableFileCheckpointing: true,
-        includePartialMessages: false,
-        ...(input.resumeSdkSessionId ? { resume: input.resumeSdkSessionId } : {}),
-      },
+      options,
     });
 
     for await (const message of iterator) {
@@ -129,13 +131,14 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     `Subagent type: ${input.subagentType}`,
     "",
     "Codex owns planning and final review. Your full assignment is stored in a local file, not in this chat prompt.",
-    "Read the assignment file before making changes, then implement exactly what it asks.",
+    "Read the assignment file before making changes, then follow the Codex-authored execution plan exactly.",
     "This assignment file supersedes any previous assignment or file-scope instruction in this conversation.",
     `Assignment file: ${assignmentFile}`,
     "",
     roleInstruction(input),
     "Do not call other subagents or task tools. Subagent depth is fixed at 1.",
     "Keep changes tightly scoped, do not modify global configuration, do not push commits, and do not run destructive commands.",
+    "If the Codex-authored plan is missing, contradictory, points to nonexistent files, exceeds allowed paths, or needs architectural choices, stop and return a decision request to Codex instead of inventing a new plan.",
     "Use only the tools made available by the host.",
     "",
     `cwd: ${input.cwd}`,
@@ -147,7 +150,7 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
 
 function roleInstruction(input: NormalizedDelegateInput): string {
   if (input.subagentType === "repo-scout") {
-    return "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise rationale. Do not edit files or use Bash.";
+    return "You are read-only. Identify relevant files, symbols, line ranges, tests, and concise factual rationale. You may use read-only Bash for inspection, but do not edit files, install dependencies, or propose a detailed implementation plan.";
   }
 
   if (input.subagentType === "reviewer-helper") {
@@ -155,8 +158,8 @@ function roleInstruction(input: NormalizedDelegateInput): string {
   }
 
   return input.runVerification
-    ? "Implement the assignment. Use Edit, MultiEdit, or Write for file modifications. Do not use Bash redirection or shell commands to edit files unless the direct file tools fail. Bash is policy-gated and should be used mainly for verification or simple inspection."
-    : "Implement the assignment. Bash is not available for this task because verification was not requested. Use Edit, MultiEdit, or Write for file modifications and finish without running shell commands.";
+    ? "Execute the Codex-authored plan in the assignment. Use Edit, MultiEdit, or Write for planned file modifications. You may make small local adaptations required by actual symbol names, imports, or formatting, but do not redesign the approach. If the plan is wrong or incomplete in a way that changes the approach, stop and ask Codex for a decision. Bash uses the assignment's policy mode and may be used for project-local build, test, lint, typecheck, and code generation commands."
+    : "Execute the Codex-authored plan in the assignment. Bash is not available for this task because verification was not requested. Use Edit, MultiEdit, or Write for planned file modifications. If the plan is wrong or incomplete in a way that changes the approach, stop and ask Codex for a decision.";
 }
 
 function getTools(input: NormalizedDelegateInput): string[] {

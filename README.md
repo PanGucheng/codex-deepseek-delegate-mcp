@@ -109,8 +109,12 @@ Use $codex-deepseek-delegate to delegate this implementation through deepseek_de
 - `allowedPaths`：可选写入范围白名单，路径必须位于 `cwd` 下，支持简单 `/**` 后缀
 - `contextFiles`：可选只读上下文文件，按 workspace root 解析，可用于 monorepo 的 `AGENTS.md`
 - `approvedCommands`：可选；Codex 在派发任务前已经批准的精确灰区 Bash 命令。只做完全字符串匹配，不能覆盖硬危险命令
+- `approvedCommandPrefixes`：可选；Codex 在派发任务前已经批准的 Bash 命令前缀。命令以该前缀开头即视为批准，不能覆盖硬危险命令
+- `executionPlan`：可选但强烈建议；Codex 制定的具体执行步骤。`implementer` 应按该计划执行，不应自行重新规划
+- `acceptanceCriteria`：可选；Codex 给出的验收条件
+- `bashPolicy`：可选；`strict`、`balanced` 或 `trusted`。`implementer` 默认 `balanced`，`repo-scout` 和 `reviewer-helper` 默认 `strict`
 - `taskId`：可选；传入时恢复同一个 child session，不传时创建 fresh child task
-- `maxTurns`：执行器最大轮次，默认 `12`
+- `maxTurns`：可选；执行器最大轮次。不传时默认不设置上限
 - `runVerification`：是否要求执行器运行安全的验证命令
 
 调用后，服务会把完整任务写成本地任务单：
@@ -145,31 +149,31 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 
 权限跟 subagent 绑定：
 
-- `repo-scout`：只允许 `Read`、`LS`、`Grep`、`Glob`，不能编辑文件，不能使用 Bash
-- `implementer`：允许 `Read`、`Edit`、`MultiEdit`、`Write`、`LS`、`Grep`、`Glob`、`TodoWrite`，Bash 走策略网关
+- `repo-scout`：只允许读文件、搜索和只读 Bash；不能编辑文件、安装依赖或生成详细实现计划
+- `implementer`：允许 `Read`、`Edit`、`MultiEdit`、`Write`、`LS`、`Grep`、`Glob`、`TodoWrite`，Bash 默认 `balanced` 策略
 - `reviewer-helper`：只允许读文件、搜索、只读/验证类 Bash；不能编辑文件，不能安装依赖，不能用 `approvedCommands` 放行灰区命令
 - 所有 subagent 都不能再调用 Task/subagent，v1 深度固定为 1
 
-对 `implementer` 来说，文件写入是常规能力：`Edit`、`Write`、`MultiEdit` 会在授权范围内自动通过。Bash 工具也可用，策略分为三层：
+对 `implementer` 来说，文件写入是常规能力：`Edit`、`Write`、`MultiEdit` 会在授权范围内自动通过。Bash 工具也可用，默认 `balanced` 策略会直接允许常规项目内工程命令，例如 build、test、lint、typecheck、代码生成和 `npm run <script>`。策略分为三层：
 
-1. 低危命令和可解析、路径受限的文件写入自动通过。
+1. 低危命令、常规工程命令和可解析、路径受限的文件写入自动通过。
 2. 硬危险命令本地拒绝，不能被审批覆盖。
 3. 其他灰区命令优先通过 MCP `sampling/createMessage` 请求当前 Codex 客户端给出 allow/deny 决策；批准后 DeepSeek 在同一个 child session 里继续执行该命令。
-4. 如果当前 Codex 客户端不支持 server-to-client sampling，可以在 `delegate_task.approvedCommands` 里传入 Codex 已经明确批准的精确命令作为降级方案。
+4. 如果当前 Codex 客户端不支持 server-to-client sampling，可以在 `delegate_task.approvedCommands` 里传入 Codex 已经明确批准的精确命令，或在 `approvedCommandPrefixes` 里传入明确批准的命令前缀作为降级方案。
 
 默认允许：
 
 - 只读命令，例如 `git status`、`git diff`、`rg`
-- 常见测试和构建命令，例如 `npm test`、`npm run build`、`npm run typecheck`、`vitest`
+- 常见测试、构建、检查和代码生成命令，例如 `npm test`、`npm run build`、`npm run typecheck`、`npm run generate`、`vitest`
 - 针对测试文件的最小 Node 执行，例如 `node math.test.js`
 - 原生文件写入工具：`Edit`、`Write`、`MultiEdit`
 - 可解析的 Bash 写文件命令，例如 `echo ... > file`、`printf ... > file`、`Set-Content -LiteralPath file ...`、`node -e fs.writeFileSync("file", ...)`
 
-需要 Codex 审批的灰区示例：
+默认仍需要 Codex 审批的灰区示例：
 
 - 新增依赖，例如 `npm install <package>`
-- 运行项目脚本以外的自定义命令
-- 非测试入口的脚本执行
+- 改依赖树或 lockfile 的命令
+- 不属于当前任务的外部网络、发布或部署相关命令
 
 默认拒绝：
 
@@ -182,18 +186,21 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - 下载脚本并立即执行的命令
 - 写出 `cwd` 或 `allowedPaths` 范围
 - 目标文件无法解析的复杂重定向
-- 未在 allowlist 中的任意命令
+- 读取 `.env`、`.ssh` 或常见 API key 环境变量
 
 如果灰区命令被 Codex/客户端拒绝，DeepSeek 会收到本次工具调用被拒绝的结果，并可以在同一个任务里选择更安全的替代方案。只有硬危险命令或最终无法继续的权限失败才会让任务返回 `blocked`；详细命令记录保存在本地会话日志。
 
 审批请求只包含单条命令、`cwd`、`allowedPaths`、任务摘要和本地策略原因；MCP 服务本身不会持有或调用 OpenAI API，也不需要 OpenAI key。具体 allow/deny 判断由当前 Codex 客户端通过 MCP sampling 完成。
 
-注意：当前部分 Codex 客户端不会向 MCP server 暴露 `sampling/createMessage`。这种情况下交互式灰区审批会返回明确的 `interactive command approval is unavailable`，而不会弹窗。需要提前允许某条命令时，让 Codex 把完整命令放入 `approvedCommands`，例如：
+注意：当前部分 Codex 客户端不会向 MCP server 暴露 `sampling/createMessage`。这种情况下交互式灰区审批会返回明确的 `interactive command approval is unavailable`，而不会弹窗。需要提前允许某条命令时，让 Codex 把完整命令放入 `approvedCommands`，或把安全前缀放入 `approvedCommandPrefixes`，例如：
 
 ```json
 {
   "approvedCommands": [
     "npm install left-pad --package-lock-only --ignore-scripts"
+  ],
+  "approvedCommandPrefixes": [
+    "npm install left-pad"
   ]
 }
 ```
@@ -205,8 +212,10 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 当前针对 Codex 的预提示词来自 MCP server 的 `instructions`、`delegate_task` 和兼容 `delegate_execute` 工具描述。它会告诉 Codex：
 
 - 简单 Read、Grep、单命令检查不要启动 subagent
-- 多文件、多步骤、需要独立探索或实现时才调用 `delegate_task`
-- 先用 `repo-scout` 做只读探索，再用 `implementer` 做代码修改
+- 多文件、多步骤、需要执行 Codex 计划时才调用 `delegate_task`
+- Codex 是 planner：调用 `implementer` 前应先制定 `executionPlan` 和 `acceptanceCriteria`
+- `repo-scout` 只做事实调研，例如路径、符号、测试入口；不是实现前的必经步骤
+- `implementer` 只执行 Codex-authored plan；如果计划不成立，应返回 `blocked`/决策请求，而不是自行换方案
 - 对大 diff、多文件或高风险变更，可在 implementer 完成后用 `reviewer-helper` 做只读审查
 - 在工具输入里传入完整任务包
 - 服务端会把任务写入本地 `assignment.md`
@@ -214,7 +223,7 @@ MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessio
 - 需要继续同一子任务返工时传回上次 `taskId`
 - 需要查看任务历史时使用 `delegate_status` / `delegate_history`，不要直接读取本地 worker 日志
 
-DeepSeek worker 另有独立 prompt，只负责读取 `assignment.md` 并执行任务。
+DeepSeek worker 另有独立 prompt，只负责读取 `assignment.md` 并执行 Codex 的计划。
 
 ## 对话生命周期
 

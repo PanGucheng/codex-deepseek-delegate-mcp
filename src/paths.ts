@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DelegateTaskInput, NormalizedDelegateInput } from "./types.js";
+import type { BashPolicy, DelegateTaskInput, NormalizedDelegateInput, SubagentType } from "./types.js";
 import { DelegateError } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -59,8 +59,18 @@ export function normalizeInput(
     workspaceRoot: resolvedRoot,
     allowedPaths,
     contextFiles,
+    fallbackPolicy: input.fallbackPolicy || "ask-codex",
+    bashPolicy: input.bashPolicy || defaultBashPolicy(input.subagentType),
     resumed: Boolean(input.resumed),
   };
+}
+
+function defaultBashPolicy(subagentType: SubagentType): BashPolicy {
+  if (subagentType === "implementer") {
+    return "balanced";
+  }
+
+  return "strict";
 }
 
 function stripSimpleGlobSuffix(value: string): string {

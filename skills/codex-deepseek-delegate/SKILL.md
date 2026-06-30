@@ -5,7 +5,7 @@ description: Delegates complex Codex codebase exploration, implementation, verif
 
 # Codex DeepSeek Delegate
 
-Use the local `deepseek_delegate` MCP server as a Task/Subagent boundary: Codex plans, delegates a compact task package, then reviews only the public result and file changes. Do not read worker transcripts or local `.delegate/sessions/*` logs unless the user explicitly asks.
+Use the local `deepseek_delegate` MCP server as a Task/Subagent boundary: Codex plans, delegates a compact execution package, then reviews only the public result and file changes. Codex is the planner; DeepSeek is the executor. Do not read worker transcripts or local `.delegate/sessions/*` logs unless the user explicitly asks.
 
 ## Tool Availability
 
@@ -30,15 +30,15 @@ Use normal Codex tools for simple work:
 Use `delegate_task` for:
 
 - Multi-file or multi-step implementation
-- Independent repo exploration before planning
+- Independent factual repo exploration before planning
 - Long-running fixture or regression work
 - Continuing an existing DeepSeek child session with `taskId`
 - Read-only review of an implementer diff
 
 Choose `subagentType`:
 
-- `repo-scout`: read-only exploration before implementation. No edits, no Bash.
-- `implementer`: code edits and verification. Use `allowedPaths` for write scope.
+- `repo-scout`: read-only factual exploration. It may use read-only Bash. No edits, no dependency installs, no implementation plan.
+- `implementer`: code edits and verification. Codex must provide `executionPlan`; use `allowedPaths` for write scope.
 - `reviewer-helper`: read-only post-implementation review. No edits, no dependency installs, no grey-zone approvals.
 
 ## delegate_task Patterns
@@ -51,11 +51,20 @@ Implementation task:
 {
   "subagentType": "implementer",
   "description": "fix auth redirect",
-  "prompt": "Fix the login redirect bug. Only edit src/auth/** and tests/auth/**. Run npm test -- auth if needed. Return summary, changed files, tests, and risks.",
+  "prompt": "Execute the Codex-authored plan exactly. Do not redesign the approach. If any step is invalid, stop and return a decision request.",
+  "executionPlan": [
+    "Open src/auth/redirect.ts and change post-login fallback logic to preserve nextUrl when it is present.",
+    "Add regression coverage in tests/auth/redirect.test.ts for nextUrl preservation.",
+    "Run npm test -- auth."
+  ],
+  "acceptanceCriteria": [
+    "Login with nextUrl redirects to nextUrl.",
+    "Existing fallback redirect remains /dashboard.",
+    "Auth tests pass."
+  ],
   "cwd": "C:/path/to/project",
   "allowedPaths": ["src/auth/**", "tests/auth/**"],
   "contextFiles": ["AGENTS.md"],
-  "maxTurns": 12,
   "runVerification": true
 }
 ```
@@ -67,10 +76,13 @@ Resume the same child session by reusing `taskId`:
   "subagentType": "implementer",
   "taskId": "task_previous",
   "description": "address review feedback",
-  "prompt": "Continue the same task. Address the reviewer feedback. Keep the same write scope.",
+  "prompt": "Continue the same task. Execute these Codex review fixes only. If the requested fix conflicts with the existing implementation, stop and ask Codex.",
+  "executionPlan": [
+    "Update the regression test name to describe the nextUrl case.",
+    "Keep the production change unchanged unless the test reveals a failure."
+  ],
   "cwd": "C:/path/to/project",
   "allowedPaths": ["src/auth/**", "tests/auth/**"],
-  "maxTurns": 8,
   "runVerification": true
 }
 ```
@@ -84,35 +96,40 @@ Review after implementation:
   "prompt": "Review the current diff and test signals. Focus on correctness, regressions, missing edge cases, and risks. Do not edit files.",
   "cwd": "C:/path/to/project",
   "contextFiles": ["AGENTS.md"],
-  "maxTurns": 8,
   "runVerification": true
 }
 ```
 
-## approvedCommands
+Omit `maxTurns` for normal work. Pass it only when intentionally limiting a smoke test or budget.
 
-Some Codex clients may not support MCP server-to-client `sampling/createMessage`; runtime approval popups may not appear. If a grey-zone command is known before delegation and Codex approves it, pass it as an exact string in `approvedCommands`.
+## approvedCommands And Prefixes
 
-Use `approvedCommands` only for precise grey-zone Bash commands, for example dependency or lockfile operations:
+Some Codex clients may not support MCP server-to-client `sampling/createMessage`; runtime approval popups may not appear. If a grey-zone command is known before delegation and Codex approves it, pass it as an exact string in `approvedCommands` or as a prefix in `approvedCommandPrefixes`.
+
+Use `approvedCommands` for precise grey-zone Bash commands, and `approvedCommandPrefixes` when Codex intentionally approves a family of command variants:
 
 ```json
 {
   "allowedPaths": ["package.json", "package-lock.json"],
   "approvedCommands": [
     "npm install left-pad --package-lock-only --ignore-scripts"
+  ],
+  "approvedCommandPrefixes": [
+    "npm install left-pad"
   ]
 }
 ```
 
 Rules:
 
-- Keep exact string matching; do not invent wildcards or regex approvals.
+- Keep `approvedCommands` exact.
+- Keep `approvedCommandPrefixes` narrow and literal; do not invent wildcards or regex approvals.
 - Include all expected side-effect files in `allowedPaths`.
 - Do not use `approvedCommands` for normal tests or read-only commands.
-- Hard-dangerous commands remain denied even if listed.
-- `reviewer-helper` cannot use `approvedCommands`.
+- Hard-dangerous commands remain denied even if listed or prefix-approved.
+- `reviewer-helper` cannot use approvals.
 
-If a delegated task returns an approval-unavailable message with a suggested JSON snippet, review the command yourself. If acceptable, retry the same `taskId` with that command in `approvedCommands`.
+If a delegated task returns an approval-unavailable message with a suggested JSON snippet, review the command yourself. If acceptable, retry the same `taskId` with that command in `approvedCommands`, or with a narrow prefix in `approvedCommandPrefixes`.
 
 ## Status And History
 
@@ -145,8 +162,9 @@ Use this table before starting a fresh task:
 |---|---|
 | MCP tools are not visible | Tell the user `deepseek_delegate` is not installed or enabled; do not simulate delegation. |
 | `taskId was not found` | Treat it as a missing child session. Start fresh only if the user agrees or the task is safe to restart. |
-| Approval unavailable for a grey-zone Bash command | Review the command. If acceptable, retry the same `taskId` with that exact command in `approvedCommands`. |
+| Approval unavailable for a grey-zone Bash command | Review the command. If acceptable, retry the same `taskId` with that exact command in `approvedCommands` or a narrow `approvedCommandPrefixes` entry. |
 | `allowedPaths` blocks an expected file | Retry the same `taskId` with the minimal additional path; mention why the scope changed. |
+| Implementer says the plan is invalid or incomplete | Codex decides the next step, then retries the same `taskId` with a corrected `executionPlan`. |
 | Worker returns `failed` but has a `taskId` | Use `delegate_status`; if resumable, continue the same `taskId` instead of restarting. |
 | Reviewer finds issues | Send a focused follow-up to the same implementer `taskId` when possible. |
 
@@ -170,4 +188,5 @@ Before final response, verify:
 - Changed files or git diff were inspected directly by Codex.
 - Tests or verification commands were run or clearly reported as not run.
 - `delegate_status` or `delegate_history` was used when continuity or prior task state matters.
-- Any `approvedCommands` entry was exact, necessary, and scoped by `allowedPaths`.
+- Codex authored the `executionPlan` for implementer tasks.
+- Any `approvedCommands` or `approvedCommandPrefixes` entry was necessary, narrow, and scoped by `allowedPaths`.

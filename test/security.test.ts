@@ -18,6 +18,7 @@ const input: NormalizedDelegateInput = {
   workspaceRoot: root,
   maxTurns: 3,
   runVerification: true,
+  bashPolicy: "balanced",
   resumed: false,
 };
 
@@ -86,6 +87,26 @@ describe("command policy", () => {
   it("blocks unparseable shell redirection", () => {
     expect(classifyCommand("npm test > test.log", { cwd: root }).allowed).toBe(false);
   });
+
+  it("allows normal project-local commands under balanced policy", () => {
+    const decision = classifyCommand("node scripts/generate-fixture.js --fast", {
+      cwd: root,
+      bashPolicy: "balanced",
+    });
+
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toContain("balanced Bash policy");
+  });
+
+  it("keeps package install approval-gated under balanced policy", () => {
+    const decision = classifyCommand("npm install left-pad", {
+      cwd: root,
+      bashPolicy: "balanced",
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.requiresApproval).toBe(true);
+  });
 });
 
 describe("tool policy", () => {
@@ -125,7 +146,8 @@ describe("tool policy", () => {
 
     expect(authorizeTool("Read", { file_path: "src/index.ts" }, scout).allowed).toBe(true);
     expect(authorizeTool("Edit", { file_path: "src/index.ts" }, scout).allowed).toBe(false);
-    expect(authorizeTool("Bash", { command: "git status --short" }, scout).allowed).toBe(false);
+    expect(authorizeTool("Bash", { command: "git status --short" }, scout).allowed).toBe(true);
+    expect(authorizeTool("Bash", { command: 'echo "hello" > notes.txt' }, scout).allowed).toBe(false);
     expect(authorizeTool("TodoWrite", { todos: [] }, scout).allowed).toBe(false);
   });
 
@@ -256,6 +278,47 @@ describe("tool policy", () => {
     expect(commandsRun[0]).toMatchObject({
       command: `cd "${input.cwd}" && ${command}`,
       status: "approved",
+    });
+  });
+
+  it("allows pre-approved Bash command prefixes without an interactive approval handler", async () => {
+    const commandsRun: CommandRecord[] = [];
+    const tests: TestRecord[] = [];
+    const preApprovedInput = {
+      ...input,
+      approvedCommandPrefixes: ["npm install left-pad"],
+    };
+    const canUseTool = createCanUseTool(preApprovedInput, commandsRun, tests);
+
+    const result = await canUseTool(
+      "Bash",
+      { command: "npm install left-pad --package-lock-only --ignore-scripts" },
+      toolOptions(),
+    );
+
+    expect(result.behavior).toBe("allow");
+    expect(commandsRun[0]).toMatchObject({
+      command: "npm install left-pad --package-lock-only --ignore-scripts",
+      status: "approved",
+    });
+    expect(commandsRun[0]?.reason).toContain("pre-approved command prefix");
+  });
+
+  it("does not let command prefixes override hard-denied Bash commands", async () => {
+    const commandsRun: CommandRecord[] = [];
+    const tests: TestRecord[] = [];
+    const preApprovedInput = {
+      ...input,
+      approvedCommandPrefixes: ["rm"],
+    };
+    const canUseTool = createCanUseTool(preApprovedInput, commandsRun, tests);
+
+    const result = await canUseTool("Bash", { command: "rm -rf dist" }, toolOptions());
+
+    expect(result.behavior).toBe("deny");
+    expect(commandsRun[0]).toMatchObject({
+      command: "rm -rf dist",
+      status: "denied",
     });
   });
 

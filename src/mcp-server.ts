@@ -29,7 +29,7 @@ import {
 } from "./service.js";
 
 const SERVER_INSTRUCTIONS =
-  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only exploration, implementer for code changes, and reviewer-helper for read-only review of a completed diff. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage when the client supports sampling. If sampling is unavailable or the command is known before delegation, Codex can pass approvedCommands with exact grey-zone commands it has already approved for this task. Use delegate_status and delegate_history for public task summaries; do not read worker transcripts or local logs unless the user explicitly asks.";
+  "Prefer delegate_task for complex multi-file or multi-step work. Do not launch a subagent for simple file reads, grep, or one command checks. Codex is the primary planner: before calling implementer, create a concrete executionPlan and acceptanceCriteria. Implementer executes the Codex-authored plan and should return blocked/decision-needed if the plan is missing, contradictory, outside allowedPaths, or requires an architectural choice. When this MCP server is installed globally, always pass the absolute target project cwd. If cwd is omitted, the server will try to use the client's first MCP root. delegate_task writes a local .delegate/sessions/<sessionId>/assignment.md file and launches a DeepSeek child session. New tasks are fresh by default; pass taskId only to continue the same child task. Use repo-scout for read-only factual exploration, implementer for planned code changes, and reviewer-helper for read-only review of a completed diff. maxTurns is unlimited by default; pass it only when Codex intentionally wants a turn cap. Implementer defaults to balanced Bash policy for normal project build/test/lint/typecheck/script commands. Approval-required Bash commands are surfaced to Codex via MCP sampling/createMessage when the client supports sampling. If sampling is unavailable or the command is known before delegation, Codex can pass approvedCommands for exact grey-zone commands or approvedCommandPrefixes for command-prefix approvals it has already approved for this task. Use delegate_status and delegate_history for public task summaries; do not read worker transcripts or local logs unless the user explicitly asks.";
 
 type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -135,7 +135,7 @@ function createCodexCommandApprovalHandler(
         allowed: false,
         reason: [
           "Codex MCP client does not advertise sampling/createMessage; interactive command approval is unavailable.",
-          "Retry the same taskId with this exact command in delegate_task.approvedCommands if Codex approves it:",
+          "Retry the same taskId with this exact command in delegate_task.approvedCommands, or with an intentional prefix in approvedCommandPrefixes, if Codex approves it:",
           JSON.stringify({ approvedCommands: [request.command] }),
         ].join(" "),
       };

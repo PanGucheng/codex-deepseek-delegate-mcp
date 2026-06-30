@@ -68,6 +68,15 @@ async function formatAssignment(
   const approvedCommands = input.approvedCommands?.length
     ? input.approvedCommands.map((command) => `- \`${command}\``).join("\n")
     : "- None";
+  const approvedCommandPrefixes = input.approvedCommandPrefixes?.length
+    ? input.approvedCommandPrefixes.map((command) => `- \`${command}\``).join("\n")
+    : "- None";
+  const executionPlan = input.executionPlan?.length
+    ? input.executionPlan.map((step, index) => `${index + 1}. ${step}`).join("\n")
+    : "- No structured execution plan was provided. If this is an implementer task, ask Codex for a plan before making non-trivial changes.";
+  const acceptanceCriteria = input.acceptanceCriteria?.length
+    ? input.acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")
+    : "- None provided";
   const contextFileContents = await formatContextFileContents(input.contextFiles || []);
 
   return [
@@ -79,13 +88,23 @@ async function formatAssignment(
     `Description: ${input.description}`,
     `cwd: ${input.cwd}`,
     `workspaceRoot: ${input.workspaceRoot}`,
-    `maxTurns: ${input.maxTurns}`,
+    `maxTurns: ${input.maxTurns ?? "unlimited"}`,
     `runVerification: ${input.runVerification ? "true" : "false"}`,
+    `bashPolicy: ${input.bashPolicy || "strict"}`,
+    `fallbackPolicy: ${input.fallbackPolicy}`,
     `resumed: ${input.resumed ? "true" : "false"}`,
     "",
     "## Prompt",
     "",
     input.prompt,
+    "",
+    "## Codex Execution Plan",
+    "",
+    executionPlan,
+    "",
+    "## Acceptance Criteria",
+    "",
+    acceptanceCriteria,
     "",
     "## Allowed Write Scope",
     "",
@@ -99,6 +118,10 @@ async function formatAssignment(
     "",
     approvedCommands,
     "",
+    "## Pre-Approved Command Prefixes",
+    "",
+    approvedCommandPrefixes,
+    "",
     "## Context File Contents",
     "",
     contextFileContents,
@@ -106,11 +129,15 @@ async function formatAssignment(
     "## Execution Rules",
     "",
     "- This assignment supersedes any previous task goal, path scope, or verification instruction in the resumed worker conversation.",
+    "- Codex owns planning and final review. The worker executes the Codex Execution Plan; it must not invent a different implementation strategy.",
+    "- If the plan is missing, contradictory, points to nonexistent files, requires edits outside allowedPaths, or needs an architectural decision, stop and return a decision request to Codex.",
+    "- Small local adaptations are allowed only when they preserve the plan, such as actual symbol names, imports, formatting, and nearby test names.",
     "- Implement or investigate only inside cwd and the allowed scope for this task.",
     "- Context files are read-only references, even when they are outside cwd or allowedPaths.",
     "- Do not modify global configuration, push commits, or run destructive commands.",
     "- Do not call other subagents or task tools. Subagent depth is fixed at 1.",
-    "- Only run grey-zone Bash commands listed under Pre-Approved Commands. If another grey-zone command is needed, stop and report it.",
+    "- Exact Pre-Approved Commands and Pre-Approved Command Prefixes may be used only for this task. They do not override hard-dangerous command denials.",
+    "- Bash policy modes: strict allows known read-only and verification commands; balanced allows normal project-local build, test, lint, typecheck, script, and generation commands; trusted allows most project-local commands except hard-denied operations.",
     input.subagentType === "reviewer-helper"
       ? "- You are read-only: do not edit files, do not install dependencies, and do not use Bash to write files."
       : "",
