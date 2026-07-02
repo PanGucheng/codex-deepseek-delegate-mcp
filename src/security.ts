@@ -84,6 +84,7 @@ const DENIED_PATTERNS: Array<[RegExp, string]> = [
   [/\b(?:curl|wget|iwr|invoke-webrequest)\b[\s\S]*(?:\|\s*(?:sh|bash|pwsh|powershell)|\biex\b|\binvoke-expression\b)/i, "download-and-execute commands are denied"],
   [/\b(?:setx|reg\s+(?:add|delete)|chmod\s+777)\b/i, "global or broad permission changes are denied"],
   [/\b(?:cat|type|get-content|echo|printenv)\b[\s\S]*(?:\.env\b|\.ssh\b|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN)/i, "credential access is denied"],
+  [/\bnode\b[\s\S]*(?:\.env\b|\.ssh\b|DEEPSEEK_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|ANTHROPIC_AUTH_TOKEN|process\.env[\s\S]*(?:KEY|TOKEN|SECRET|PASSWORD))/i, "credential access is denied"],
   [/\b(?:npm\s+publish|pnpm\s+publish|yarn\s+npm\s+publish|docker\s+push|gh\s+release|vercel\s+deploy)\b/i, "publish or deploy commands are denied"],
 ];
 
@@ -158,6 +159,10 @@ export function classifyCommand(
     };
   }
 
+  if (isSafeReadOnlyNodeCommand(normalizedCommand)) {
+    return { allowed: true, reason: "read-only Node inline command is allowed", command: trimmed };
+  }
+
   const parts = splitCommand(normalizedCommand);
   if (parts.length === 0) {
     return { allowed: false, reason: "empty command", command: trimmed };
@@ -202,9 +207,29 @@ function splitCommand(command: string): string[] {
 }
 
 function isSafeSubcommand(command: string): boolean {
+  if (isSafeReadOnlyNodeCommand(command)) {
+    return true;
+  }
+
   return [...SAFE_READ_ONLY_COMMANDS, ...SAFE_VERIFICATION_COMMANDS].some((pattern) =>
     pattern.test(command),
   );
+}
+
+function isSafeReadOnlyNodeCommand(command: string): boolean {
+  const script = parseNodeInlineScript(command);
+  if (!script) {
+    return false;
+  }
+
+  return ![
+    /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|rm|rmSync|unlink|unlinkSync|rmdir|rmdirSync|mkdir|mkdirSync|rename|renameSync|copyFile|copyFileSync|chmod|chmodSync|chown|chownSync|truncate|truncateSync)\b/i,
+    /\b(?:exec|execSync|spawn|spawnSync|fork)\s*\(/i,
+    /\bchild_process\b/i,
+    /\b(?:fetch|XMLHttpRequest)\s*\(/i,
+    /\bprocess\.env\b[\s\S]*(?:KEY|TOKEN|SECRET|PASSWORD|DEEPSEEK|ANTHROPIC|OPENAI)/i,
+    /(?:\.env\b|\.ssh\b)/i,
+  ].some((pattern) => pattern.test(script));
 }
 
 function isPackageInstallSubcommand(command: string): boolean {
@@ -644,6 +669,11 @@ function parsePythonWrite(command: string): string[] {
 
 function parseInlineScript(command: string, executable: "node" | "python"): string | undefined {
   const match = new RegExp(`^\\s*${executable}\\s+-[ec]\\s+(?:"([\\s\\S]*)"|'([\\s\\S]*)')\\s*$`, "i").exec(command);
+  return match ? match[1] || match[2] : undefined;
+}
+
+function parseNodeInlineScript(command: string): string | undefined {
+  const match = /^\s*node\s+-(?:e|p)\s+(?:"([\s\S]*)"|'([\s\S]*)')\s*$/i.exec(command);
   return match ? match[1] || match[2] : undefined;
 }
 

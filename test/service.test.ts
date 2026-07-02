@@ -89,6 +89,29 @@ class ThrowingObservedSessionRunner implements DelegateRunner {
   }
 }
 
+class ArtifactWritingRunner implements DelegateRunner {
+  async run(input: NormalizedDelegateInput, context: RunnerContext): Promise<DelegateResult> {
+    await fs.mkdir(path.join(input.cwd, "src"), { recursive: true });
+    await fs.mkdir(path.join(input.cwd, "dist"), { recursive: true });
+    await fs.writeFile(path.join(input.cwd, "src", "cart.ts"), "export const total = 1;\n", "utf8");
+    await fs.writeFile(path.join(input.cwd, "dist", "cart.js"), "export const total = 1;\n", "utf8");
+    return {
+      taskId: input.taskId,
+      subagentType: input.subagentType,
+      status: "completed",
+      summary: "wrote source and artifact",
+      changedFiles: [".delegate/internal.txt", "dist/cart.js"],
+      commandsRun: context.commandsRun,
+      tests: context.tests,
+      sessionId: context.sessionId,
+      logPath: context.logPath,
+      sdkSessionId: "55555555-5555-4555-8555-555555555555",
+      sdkModel: "deepseek-test",
+      resumed: input.resumed,
+    };
+  }
+}
+
 describe("executeDelegate", () => {
   it("keeps the legacy delegate_execute wrapper working", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-service-"));
@@ -119,6 +142,27 @@ describe("executeDelegate", () => {
     expect(assignment).toContain("## Prompt");
     expect(assignment).toContain("write a file");
     expect(assignment).toContain("create worker-output.txt");
+  });
+
+  it("separates verification artifacts from public changed files", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-artifacts-"));
+    const result = await executeDelegateTask(
+      {
+        subagentType: "implementer",
+        description: "write source and build output",
+        prompt: "write files",
+        cwd,
+        allowedPaths: ["src/**"],
+        runVerification: true,
+      },
+      {
+        runner: new ArtifactWritingRunner(),
+        env: { DEEPSEEK_DELEGATE_WORKSPACE_ROOT: cwd },
+      },
+    );
+
+    expect(result.changedFiles).toEqual(["src/cart.ts"]);
+    expect(result.artifactFiles).toEqual(["dist/cart.js"]);
   });
 
   it("creates a fresh task registry record for delegate_task", async () => {

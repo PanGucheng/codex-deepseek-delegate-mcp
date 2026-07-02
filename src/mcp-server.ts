@@ -314,6 +314,7 @@ function toPublicResult(result: DelegateResult) {
     status: result.status,
     summary: result.summary,
     changedFiles: result.changedFiles,
+    artifactFiles: result.artifactFiles,
     tests: result.tests,
     handoffFile: result.handoffFile,
     evidenceFiles: result.evidenceFiles,

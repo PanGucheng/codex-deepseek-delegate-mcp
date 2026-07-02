@@ -37,7 +37,7 @@ Use `delegate_task` for:
 
 Choose `subagentType`:
 
-- `repo-scout`: read-only factual exploration. It may use read-only Bash. No edits, no dependency installs, no implementation plan.
+- `repo-scout`: read-only factual exploration. It may use read-only Bash, including restricted read-only `node -e/-p` inspection. No edits, no dependency installs, no implementation plan.
 - `implementer`: code edits and verification. Codex must provide `executionPlan`; use `allowedPaths` for write scope.
 - `reviewer-helper`: read-only post-implementation review. No edits, no dependency installs, no grey-zone approvals.
 
@@ -154,7 +154,7 @@ Use `delegate_history` to list recent public summaries:
 
 Treat these tools as the normal way to inspect prior delegate work. They intentionally omit `commandsRun`, `sessionId`, `logPath`, `sdkSessionId`, and worker transcript.
 
-Implementer tasks may return `handoffFile` and `evidenceFiles`. These are curated files written by DeepSeek for Codex, not full transcripts. Prefer reading them when verification details, selected output excerpts, plan deviations, risks, or unverified items matter.
+Implementer tasks may return `handoffFile`, `evidenceFiles`, and `artifactFiles`. Handoff/evidence files are curated files written by DeepSeek for Codex, not full transcripts. `artifactFiles` contains build/cache outputs such as `dist/**`, separate from source/test `changedFiles`. Prefer reading handoff/evidence when verification details, selected output excerpts, plan deviations, risks, or unverified items matter.
 
 ## Failure Handling
 

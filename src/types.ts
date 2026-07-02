@@ -114,6 +114,7 @@ export type DelegateResult = {
   status: DelegateStatus;
   summary: string;
   changedFiles: string[];
+  artifactFiles?: string[];
   commandsRun: CommandRecord[];
   tests: TestRecord[];
   sessionId: string;

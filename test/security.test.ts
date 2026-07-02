@@ -155,7 +155,10 @@ describe("tool policy", () => {
     expect(authorizeTool("Read", { file_path: "src/index.ts" }, scout).allowed).toBe(true);
     expect(authorizeTool("Edit", { file_path: "src/index.ts" }, scout).allowed).toBe(false);
     expect(authorizeTool("Bash", { command: "git status --short" }, scout).allowed).toBe(true);
+    expect(authorizeTool("Bash", { command: 'node -e "const fs=require(\'fs\'); console.log(fs.readFileSync(\'package.json\',\'utf8\').length)"' }, scout).allowed).toBe(true);
     expect(authorizeTool("Bash", { command: 'echo "hello" > notes.txt' }, scout).allowed).toBe(false);
+    expect(authorizeTool("Bash", { command: 'node -e "const fs=require(\'fs\'); fs.writeFileSync(\'notes.txt\',\'hello\')"' }, scout).allowed).toBe(false);
+    expect(authorizeTool("Bash", { command: 'node -e "console.log(process.env.DEEPSEEK_API_KEY)"' }, scout).allowed).toBe(false);
     expect(authorizeTool("TodoWrite", { todos: [] }, scout).allowed).toBe(false);
   });
 

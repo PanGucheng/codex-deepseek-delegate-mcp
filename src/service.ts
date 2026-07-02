@@ -286,6 +286,7 @@ async function runDelegateTask(
       status,
       summary: denied?.reason || errorToSummary(error),
       changedFiles: [],
+      artifactFiles: [],
       commandsRun,
       tests,
       sessionId: log.sessionId,
@@ -301,7 +302,7 @@ async function runDelegateTask(
   const after = await createFileSnapshot(input.cwd);
   const snapshotChangedFiles = diffSnapshots(before, after);
   const gitChangedFiles = await getGitChangedFiles(input.cwd);
-  const changedFiles = uniqueSorted([
+  const classifiedFiles = classifyChangedFiles([
     ...result.changedFiles,
     ...(gitChangedFiles ?? snapshotChangedFiles),
   ]);
@@ -314,7 +315,8 @@ async function runDelegateTask(
     ...result,
     taskId: input.taskId,
     subagentType: input.subagentType,
-    changedFiles,
+    changedFiles: classifiedFiles.changedFiles,
+    artifactFiles: classifiedFiles.artifactFiles,
     commandsRun: uniqueCommands(result.commandsRun),
     tests: result.tests,
     sessionId: log.sessionId,
@@ -344,6 +346,7 @@ async function runDelegateTask(
     subagentType: finalResult.subagentType,
     status: finalResult.status,
     changedFiles: finalResult.changedFiles,
+    artifactFiles: finalResult.artifactFiles,
     commandsRun: finalResult.commandsRun,
     tests: finalResult.tests,
     sdkSessionId: finalResult.sdkSessionId,
@@ -393,6 +396,7 @@ async function createBlockedResult(
     status: "blocked",
     summary,
     changedFiles: [],
+    artifactFiles: [],
     commandsRun: [],
     tests: [],
     sessionId: log.sessionId,
@@ -418,6 +422,49 @@ function isBlockedDelegateError(error: unknown): boolean {
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function classifyChangedFiles(values: string[]): { changedFiles: string[]; artifactFiles: string[] } {
+  const changedFiles: string[] = [];
+  const artifactFiles: string[] = [];
+
+  for (const value of uniqueSorted(values.map(normalizeRelativePath))) {
+    if (!value || isDelegateMetadataPath(value)) {
+      continue;
+    }
+
+    if (isVerificationArtifactPath(value)) {
+      artifactFiles.push(value);
+      continue;
+    }
+
+    changedFiles.push(value);
+  }
+
+  return {
+    changedFiles,
+    artifactFiles,
+  };
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+function isDelegateMetadataPath(value: string): boolean {
+  return value === ".delegate" || value.startsWith(".delegate/");
+}
+
+function isVerificationArtifactPath(value: string): boolean {
+  return (
+    value.startsWith("dist/") ||
+    value.startsWith("build/") ||
+    value.startsWith("coverage/") ||
+    value.startsWith(".cache/") ||
+    value.startsWith(".turbo/") ||
+    value.startsWith(".vite/") ||
+    value.endsWith(".tsbuildinfo")
+  );
 }
 
 function uniqueCommands(commands: DelegateResult["commandsRun"]): DelegateResult["commandsRun"] {
@@ -485,6 +532,7 @@ function toPublicHistoryItem(record: TaskSessionRecord, result: DelegateResult |
           status: result.status,
           summary: result.summary,
           changedFiles: result.changedFiles,
+          artifactFiles: result.artifactFiles,
           tests: result.tests.map(({ command, status }) => ({ command, status })),
           handoffFile: result.handoffFile,
           evidenceFiles: result.evidenceFiles,
@@ -498,6 +546,7 @@ function toPublicLastResult(result: DelegateResult) {
     status: result.status,
     summary: result.summary,
     changedFiles: result.changedFiles,
+    artifactFiles: result.artifactFiles,
     tests: result.tests.map(({ command, status }) => ({ command, status })),
     handoffFile: result.handoffFile,
     evidenceFiles: result.evidenceFiles,

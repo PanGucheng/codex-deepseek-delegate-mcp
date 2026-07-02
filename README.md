@@ -156,17 +156,18 @@ DeepSeek worker 收到的 prompt 只包含任务单路径、`cwd`、subagent 类
 - `status`：`completed`、`blocked` 或 `failed`
 - `summary`：执行摘要
 - `changedFiles`：检测到变化的文件
+- `artifactFiles`：验证命令生成或更新的构建/缓存产物，例如 `dist/**`、`coverage/**`、`*.tsbuildinfo`
 - `tests`：识别到的测试/验证命令
 - `handoffFile`：DeepSeek 为 Codex 整理的精选交接文件，通常为 `.delegate/sessions/<sessionId>/handoff.md`
 - `evidenceFiles`：DeepSeek 选择移交的补充证据文件，例如精简测试输出片段
 
-MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessionId` 或 `logPath`。这些信息只写入本地 `.delegate/sessions/<sessionId>/`，用于人工排查，不让 Codex 自动读取 worker 中间过程。DeepSeek 如果认为某些测试输出、失败片段或风险说明值得交给 Codex，应写入 `handoffFile` 或 `evidenceFiles`；Codex 按需读取这些精选文件，而不是读取完整 transcript。
+MCP 返回给 Codex 的是精简公开结果，不包含 `commandsRun`、`sessionId` 或 `logPath`。这些信息只写入本地 `.delegate/sessions/<sessionId>/`，用于人工排查，不让 Codex 自动读取 worker 中间过程。`.delegate/**` 不会进入公开 `changedFiles`；常见构建/缓存副产物会进入 `artifactFiles`，避免和源码/测试改动混在一起。DeepSeek 如果认为某些测试输出、失败片段或风险说明值得交给 Codex，应写入 `handoffFile` 或 `evidenceFiles`；Codex 按需读取这些精选文件，而不是读取完整 transcript。
 
 ## 安全策略
 
 权限跟 subagent 绑定：
 
-- `repo-scout`：只允许读文件、搜索和只读 Bash；不能编辑文件、安装依赖或生成详细实现计划
+- `repo-scout`：只允许读文件、搜索、只读 Bash 和受限只读 `node -e/-p` 检查；不能编辑文件、安装依赖或生成详细实现计划
 - `implementer`：允许 `Read`、`Edit`、`MultiEdit`、`Write`、`LS`、`Grep`、`Glob`、`TodoWrite`，Bash 默认 `balanced` 策略
 - `reviewer-helper`：只允许读文件、搜索、只读/验证类 Bash；不能编辑文件，不能安装依赖，不能用 `approvedCommands` 放行灰区命令
 - 所有 subagent 都不能再调用 Task/subagent，v1 深度固定为 1
