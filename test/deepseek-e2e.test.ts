@@ -60,7 +60,7 @@ describe.skipIf(!shouldRun)("real DeepSeek end-to-end task flow", () => {
         description: "Fix add implementation",
         prompt: [
           "Fix math.js so node math.test.js passes. Only math.js may be edited.",
-          "Use Edit or Write to replace the implementation with: return a + b;",
+          "Use the edit or write tool to replace the implementation with: return a + b;",
           "Do not run shell commands in this step.",
         ].join("\n"),
         cwd,

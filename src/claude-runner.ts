@@ -142,10 +142,20 @@ function buildWorkerPrompt(input: NormalizedDelegateInput): string {
     "Use only the tools made available by the host.",
     "",
     `cwd: ${input.cwd}`,
-    input.subagentType === "reviewer-helper"
-      ? "Finish with a compact report containing Findings, Tests Observed, Risks, and Suggested Follow-up."
-      : "Before finishing, write the curated Codex handoff requested in the assignment. Then finish with a compact report containing Summary, Changed files, Commands run, Tests, Risks, and the handoff file path.",
+    finalReportInstruction(input),
   ].join("\n");
+}
+
+function finalReportInstruction(input: NormalizedDelegateInput): string {
+  if (input.subagentType === "repo-scout") {
+    return "Finish with a compact factual report containing Relevant files, Symbols or line ranges, Test entry points, and Rationale. Do not write handoff files.";
+  }
+
+  if (input.subagentType === "reviewer-helper") {
+    return "Finish with a compact report containing Findings, Tests Observed, Risks, and Suggested Follow-up.";
+  }
+
+  return "Before finishing, write the curated Codex handoff requested in the assignment. Then finish with a compact report containing Summary, Changed files, Commands run, Tests, Risks, and the handoff file path.";
 }
 
 function roleInstruction(input: NormalizedDelegateInput): string {

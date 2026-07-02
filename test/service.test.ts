@@ -85,7 +85,7 @@ class ThrowingObservedSessionRunner implements DelegateRunner {
     context.sdkSessionId = "44444444-4444-4444-8444-444444444444";
     context.sdkModel = "deepseek-test";
     await fs.writeFile(path.join(input.cwd, "partial-before-throw.txt"), "partial", "utf8");
-    throw new Error("Claude Code returned an error result: Reached maximum number of turns (4)");
+    throw new Error("Delegate worker returned an error result: Reached maximum number of turns (4)");
   }
 }
 

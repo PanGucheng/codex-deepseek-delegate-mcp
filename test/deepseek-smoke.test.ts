@@ -7,7 +7,7 @@ import { executeDelegate } from "../src/service.js";
 const shouldRun = Boolean(process.env.DEEPSEEK_API_KEY && process.env.RUN_DEEPSEEK_SMOKE === "1");
 
 describe.skipIf(!shouldRun)("real DeepSeek smoke test", () => {
-  it("reaches DeepSeek through Claude Agent SDK and reads a tiny fixture", async () => {
+  it("reaches DeepSeek through the configured delegate runner and reads a tiny fixture", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "delegate-deepseek-smoke-"));
     await fs.writeFile(
       path.join(cwd, "math.js"),

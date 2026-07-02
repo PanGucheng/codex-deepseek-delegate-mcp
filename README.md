@@ -1,13 +1,14 @@
 # Codex DeepSeek Delegate MCP
 
-这是一个本地 Codex MCP 服务。它让 Codex 使用 `gpt-5.5` 作为 primary planner，再通过 OpenCode 风格的 Task/Subagent 工具把探索或实现任务委托给 Claude Agent SDK，并由 DeepSeek 的 Anthropic 兼容接口提供模型能力。
+这是一个本地 Codex MCP 服务。它让 Codex 使用 `gpt-5.5` 作为 primary planner，再通过 OpenCode 风格的 Task/Subagent 工具把探索或实现任务委托给 Pi worker，并由 DeepSeek 提供模型能力。Claude Agent SDK runner 仍保留为显式 fallback。
 
 ## 功能概览
 
 - MCP 工具：`delegate_task`、`delegate_status`、`delegate_history`，兼容工具：`delegate_execute`
-- 运行时：TypeScript + Node.js 18+
-- 执行器：`@anthropic-ai/claude-agent-sdk`
-- 模型供应商映射：`DEEPSEEK_API_KEY` 会映射到 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`
+- 运行时：TypeScript + Node.js 22.19+
+- 默认执行器：`@earendil-works/pi-coding-agent`
+- fallback 执行器：`@anthropic-ai/claude-agent-sdk`，通过 `DEEPSEEK_DELEGATE_RUNNER=claude` 启用
+- 模型供应商：Pi runner 直接使用 `DEEPSEEK_API_KEY` 和 Pi 内置 DeepSeek provider
 - 任务交接：写入 `.delegate/sessions/<sessionId>/assignment.md`，DeepSeek child session 先读取本地任务文件再执行
 - 会话日志：写入 `.delegate/sessions/<sessionId>/request.json`、`assignment.md`、`events.jsonl` 和 `result.json`
 - 任务 registry：写入 `.delegate/tasks.json`，用 `taskId` 恢复同一个 DeepSeek child session
@@ -69,10 +70,24 @@ default_tools_approval_mode = "prompt"
 $env:DEEPSEEK_API_KEY = "..."
 ```
 
+默认 runner 是 Pi，默认模型是 `deepseek/deepseek-v4-pro`。需要覆盖时：
+
+```powershell
+$env:DEEPSEEK_DELEGATE_PI_MODEL = "deepseek-v4-pro"
+```
+
+需要临时回退到 Claude Agent SDK 时：
+
+```powershell
+$env:DEEPSEEK_DELEGATE_RUNNER = "claude"
+```
+
 开发时如果不想发起真实模型调用，可以启用 mock runner：
 
 ```powershell
 $env:DEEPSEEK_DELEGATE_MOCK = "1"
+# 或者：
+$env:DEEPSEEK_DELEGATE_RUNNER = "mock"
 npm run dev
 ```
 
@@ -114,7 +129,7 @@ Use $codex-deepseek-delegate to delegate this implementation through deepseek_de
 - `acceptanceCriteria`：可选；Codex 给出的验收条件
 - `bashPolicy`：可选；`strict`、`balanced` 或 `trusted`。`implementer` 默认 `balanced`，`repo-scout` 和 `reviewer-helper` 默认 `strict`
 - `taskId`：可选；传入时恢复同一个 child session，不传时创建 fresh child task
-- `maxTurns`：可选；执行器最大轮次。不传时 MCP 会显式设置为 `100`，避免落到 Claude Code 较低的内部默认值
+- `maxTurns`：可选；执行器最大轮次。不传时 MCP 会显式设置为 `100`，避免落到底层 worker 的较低默认值
 - `runVerification`：是否要求执行器运行安全的验证命令
 
 调用后，服务会把完整任务写成本地任务单：
@@ -233,7 +248,7 @@ DeepSeek worker 另有独立 prompt，只负责读取 `assignment.md` 并执行 
 当前策略是 OpenCode 风格 child session：
 
 - 不传 `taskId`：创建 fresh child session
-- 传入已有 `taskId`：通过 Claude Agent SDK `resume` 恢复同一个 child session
+- 传入已有 `taskId`：恢复同一个 child worker session
 - 传入未知 `taskId`：返回 `blocked`
 
 task registry 保存在：
